@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>hcu-train-simulator Web</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <h1>hcu-train-simulator Web</h1>
+    <p class="subtitle">
+      包一层 <code>hcu-train-simulator</code> 的 web UI。粘贴模型名字 / 上传
+      <code>config.json</code>，给出 <b>最佳训练配置</b> 和 <b>预估训练性能</b>。
+    </p>
+    <p id="health" class="health"></p>
+  </header>
+
+  <section class="card">
+    <h2>① 选择任务</h2>
+    <div class="task-group" role="radiogroup" aria-label="训练任务">
+      <label class="task-radio">
+        <input type="radio" name="task" value="full_ft" checked>
+        <span class="task-label">全参微调 (full fine-tune)</span>
+        <span class="task-hint">全模型参数都训练。最常见的 fine-tune 模式。</span>
+      </label>
+      <label class="task-radio">
+        <input type="radio" name="task" value="pretrain">
+        <span class="task-label">预训练 (pretrain)</span>
+        <span class="task-hint">从头训练。会开 full_recompute、distributed optimizer。</span>
+      </label>
+      <label class="task-radio">
+        <input type="radio" name="task" value="lora">
+        <span class="task-label">LoRA 微调</span>
+        <span class="task-hint">⚠ simulator 不感知 LoRA；memory 数字按 base-FT 估，吞吐仅作上界参考。</span>
+      </label>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>② 选择模型</h2>
+
+    <div class="tabs">
+      <button class="tab active" data-tab="preset">预设模型</button>
+      <button class="tab" data-tab="hf_id">HuggingFace id</button>
+      <button class="tab" data-tab="upload">上传 config.json</button>
+    </div>
+
+    <div class="tab-panel" data-panel="preset">
+      <div id="model-preset-grid" class="preset-grid"></div>
+    </div>
+
+    <div class="tab-panel hidden" data-panel="hf_id">
+      <label>HuggingFace 模型仓库 id（如 <code>Qwen/Qwen3-8B</code>）：
+        <input id="hf_id" type="text" placeholder="THUDM/glm-4-9b"></label>
+      <p class="hint">首次访问会从 huggingface.co 拉 <code>config.json</code>。私有模型会 401。</p>
+    </div>
+
+    <div class="tab-panel hidden" data-panel="upload">
+      <label>config.json: <input id="cfg_file" type="file" accept=".json"></label>
+      <p class="hint">或直接粘贴 JSON：</p>
+      <textarea id="cfg_text" rows="6" placeholder='{"model_type":"qwen3","hidden_size":4096,...}'></textarea>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>③ 选择硬件</h2>
+    <div id="hw-preset-grid" class="preset-grid"></div>
+    <details>
+      <summary>覆盖默认参数（可选）</summary>
+      <div class="grid two">
+        <label>峰值 FP16 TFLOPS<input id="opt_fp16" type="number" step="1"></label>
+        <label>峰值 FP8 TFLOPS<input id="opt_fp8" type="number" step="1"></label>
+        <label>HBM 单卡 (GiB)<input id="opt_hbm" type="number" step="1"></label>
+        <label>卡间互联 (GB/s)<input id="opt_intra" type="number" step="1"></label>
+        <label>GEMM 效率 (0–1)<input id="opt_gemm" type="number" step="0.01" min="0.05" max="1"></label>
+        <label>节点内 P2P 效率 (0–1)<input id="opt_p2p" type="number" step="0.01" min="0.05" max="1"></label>
+      </div>
+    </details>
+  </section>
+
+  <section class="card">
+    <h2>④ 训练并行 & 超参数</h2>
+    <div class="grid four">
+      <label>TP<input id="tp" type="number" value="4" min="1"></label>
+      <label>PP<input id="pp" type="number" value="1" min="1"></label>
+      <label>EP<input id="ep" type="number" value="1" min="1"></label>
+      <label>CP<input id="cp" type="number" value="1" min="1"></label>
+      <label>微批 (mbs)<input id="mbs" type="number" value="1" min="1"></label>
+      <label>全局批 (gbs)<input id="gbs" type="number" value="256" min="1"></label>
+      <label>序列长度<input id="seq" type="number" value="4096" min="128"></label>
+      <label>总卡数<input id="ng" type="number" value="8" min="1"></label>
+      <label class="check"><input id="fp8" type="checkbox"> 使用 FP8</label>
+    </div>
+    <p class="hint">这些值用于「指定配置」的 simulation；solve 命令会自动搜索更优组合。</p>
+  </section>
+
+  <section id="lora-card" class="card hidden">
+    <h2>⑤ LoRA 参数</h2>
+    <div class="grid three">
+      <label>rank (r)<input id="lora_r" type="number" value="16" min="1" max="512"></label>
+      <label>alpha<input id="lora_alpha" type="number" value="32" min="1" max="1024"></label>
+      <label>dropout<input id="lora_dropout" type="number" value="0.05" step="0.01" min="0" max="1"></label>
+    </div>
+    <label>target_modules（逗号分隔）<input id="lora_targets" type="text"
+      value="q_proj,k_proj,v_proj,o_proj"
+      placeholder="q_proj,k_proj,v_proj,o_proj"></label>
+    <p class="hint">⚠ 当前 simulator 不解析 lora: 块；这里的值只会被写进 YAML 注释与末尾 lora: 段，结果数字仍是 base-FT 估算。</p>
+  </section>
+
+  <section class="actions">
+    <button id="run" class="primary">▶ 跑模拟</button>
+    <span id="status" class="status"></span>
+  </section>
+
+  <section id="results" class="card hidden">
+    <h2>⑥ 结果</h2>
+
+    <div class="result-block">
+      <h3>① 模型摘要（自动识别）</h3>
+      <div id="r_summary"></div>
+    </div>
+
+    <div class="result-block">
+      <h3>② 当前配置模拟性能（按你设置的 TP/PP/seq/gbs）</h3>
+      <div id="r_simulation"></div>
+    </div>
+
+    <div class="result-block">
+      <h3>③ solve —— 最小 GPU 方案 vs 高性能方案</h3>
+      <div id="r_solve"></div>
+    </div>
+
+    <div class="result-block">
+      <h3>模拟器原始输出</h3>
+      <p class="hint" id="r_command"></p>
+      <details open><summary>stdout</summary><pre id="r_stdout"></pre></details>
+      <details><summary>stderr（错误时展开）</summary><pre id="r_stderr"></pre></details>
+    </div>
+
+    <div class="result-block">
+      <h3>生成的 YAML</h3>
+      <details><summary>config.yaml</summary><pre id="r_yaml"></pre></details>
+    </div>
+  </section>
+
+  <footer>
+    <p>
+      <a href="https://github.com/HYGON-AI/hcu-train-simulator" target="_blank">
+        hcu-train-simulator (Hygon) ↗
+      </a>
+      · 本地服务：<code>python3 /root/hcu-train-web/backend.py</code>
+      · 源码：<code>/root/hcu-train-web/</code>
+    </p>
+  </footer>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

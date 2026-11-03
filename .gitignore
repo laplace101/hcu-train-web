@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Node
+node_modules/
+package-lock.json
+package.json
+
+# Runtime state: generated reports, uploaded model configs, extracted codes
+runtime/
+*.log
+
+# Local secrets — extraction codes and tokens must never be committed
+.env
+*.pem
+*.key
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Legacy backups and caches — the previous implementation is kept for
+# reference, but its stale .bak copies and bytecode are not worth versioning.
+*.bak
+*.bak2
+*.v1.bak
+legacy/__pycache__/
+legacy/**/__pycache__/

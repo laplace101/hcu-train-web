@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>hcu-train-web · 海光 DCU 训练性能仿真</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}" />
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar__brand">
+    <span class="logo">HCU</span>
+    <div>
+      <h1>大模型训练性能仿真</h1>
+      <p class="sub">计算逻辑完全来自 <code>hcu-train-simulator</code></p>
+    </div>
+  </div>
+  <div class="topbar__meta">
+    <span class="pill" id="pill-sim">simulator: 加载中…</span>
+    <span class="pill pill--muted" id="pill-models">模型: 加载中…</span>
+  </div>
+</header>
+
+<main class="layout">
+
+  <!-- ============ 左侧：输入 ============ -->
+  <aside class="panel panel--form">
+
+    <!-- ① 训练类型 -->
+    <section class="block">
+      <h2 class="block__title"><span class="idx">1</span>训练类型</h2>
+      <div class="task-grid" id="task-grid"></div>
+      <p class="task-note" id="task-note"></p>
+      <div id="mode-warning" class="notice notice--warn" hidden></div>
+      <div id="mode-kernel-note" class="notice notice--info" hidden></div>
+    </section>
+
+    <!-- ② 模型 -->
+    <section class="block">
+      <h2 class="block__title"><span class="idx">2</span>模型选择</h2>
+
+      <div class="segmented" role="tablist">
+        <button class="segmented__btn is-active" data-model-tab="preset">预设模型</button>
+        <button class="segmented__btn" data-model-tab="modelscope">ModelScope</button>
+        <button class="segmented__btn" data-model-tab="hf">HF 链接</button>
+        <button class="segmented__btn" data-model-tab="upload">上传文件</button>
+        <button class="segmented__btn" data-model-tab="paste">粘贴 JSON</button>
+      </div>
+
+      <!-- 预设 -->
+      <div class="model-pane is-active" data-model-pane="preset">
+        <input type="search" id="model-search" class="input" placeholder="搜索模型，例如 Qwen3 / DeepSeek / GLM" />
+        <div class="family-list" id="family-list"></div>
+        <select id="model-select" class="input input--select" size="10"></select>
+        <div class="model-summary" id="preset-summary"></div>
+      </div>
+
+      <!-- ModelScope -->
+      <div class="model-pane" data-model-pane="modelscope">
+        <label class="label" for="ms-ref">ModelScope 仓库名或链接</label>
+        <input type="text" id="ms-ref" class="input" placeholder="Qwen/Qwen3-8B  或  https://modelscope.cn/models/Qwen/Qwen3-8B" />
+        <p class="hint">从魔搭社区读取 <code>config.json</code>，仅访问白名单域名；会记录 revision 与配置哈希以保证可追溯。</p>
+        <button class="btn btn--ghost" id="btn-resolve-ms">读取并解析</button>
+        <div class="model-summary" id="ms-summary"></div>
+      </div>
+
+      <!-- HF -->
+      <div class="model-pane" data-model-pane="hf">
+        <label class="label" for="hf-ref">HuggingFace 仓库名或链接</label>
+        <input type="text" id="hf-ref" class="input" placeholder="Qwen/Qwen3-8B  或  https://huggingface.co/Qwen/Qwen3-8B" />
+        <p class="hint">自动读取该仓库的 <code>config.json</code>，然后按参考仓库的适配器计算。</p>
+        <button class="btn btn--ghost" id="btn-resolve-hf">读取并解析</button>
+        <div class="model-summary" id="hf-summary"></div>
+      </div>
+
+      <!-- 上传 -->
+      <div class="model-pane" data-model-pane="upload">
+        <label class="label" for="file-input">选择本地 config.json</label>
+        <input type="file" id="file-input" accept=".json,application/json" class="input" />
+        <button class="btn btn--ghost" id="btn-resolve-upload">上传并解析</button>
+        <div class="model-summary" id="upload-summary"></div>
+      </div>
+
+      <!-- 粘贴 -->
+      <div class="model-pane" data-model-pane="paste">
+        <label class="label" for="paste-area">粘贴 config.json 内容</label>
+        <textarea id="paste-area" class="input input--area" rows="8" placeholder='{"architectures": [...], "model_type": "qwen3", ...}'></textarea>
+        <button class="btn btn--ghost" id="btn-resolve-paste">解析并校验</button>
+        <div class="model-summary" id="paste-summary"></div>
+      </div>
+    </section>
+
+    <!-- ③ 硬件 -->
+    <section class="block">
+      <h2 class="block__title"><span class="idx">3</span>硬件与算子 Profile</h2>
+      <div id="hardware-box"></div>
+      <details class="details">
+        <summary>自定义硬件参数（高级）</summary>
+        <div class="grid grid--two" id="hardware-override"></div>
+        <p class="hint">仅覆盖 <code>hardware_config</code> 字段；通信仍使用仓库内置实测带宽表。</p>
+      </details>
+    </section>
+
+    <!-- ④ 训练配置 -->
+    <section class="block">
+      <h2 class="block__title"><span class="idx">4</span>并行与批次</h2>
+
+      <div class="grid grid--three" id="parallel-grid"></div>
+
+      <div class="toggles" id="toggle-grid"></div>
+
+      <details class="details">
+        <summary>高级：重计算 / 通信掩盖</summary>
+        <div class="grid grid--two" id="advanced-grid"></div>
+      </details>
+
+      <div class="derived" id="derived-box"></div>
+    </section>
+
+    <!-- ⑤ 数据量与训练规模 -->
+    <section class="block">
+      <h2 class="block__title"><span class="idx">5</span>数据量与训练规模</h2>
+      <div class="grid grid--two" id="data-grid"></div>
+      <p class="hint">用于换算训练步数与预计总时长。至少填写其中一项，否则无法给出总时长估算。</p>
+      <div id="data-derived" class="derived"></div>
+    </section>
+
+    <!-- 操作 -->
+    <section class="block block--actions">
+      <button class="btn btn--primary btn--block" id="btn-simulate">开始仿真</button>
+      <div class="btn-row">
+        <button class="btn" id="btn-solve">求解三类方案</button>
+        <button class="btn" id="btn-search">并行策略搜索</button>
+      </div>
+      <button class="btn btn--ghost btn--block" id="btn-validate">仅校验参数</button>
+      <p class="hint">所有估算都来自同一个估计器内核，数值口径一致；未建模的训练类型会明确拒绝而不是套用全参数字。</p>
+    </section>
+  </aside>
+
+  <!-- ============ 右侧：结果 ============ -->
+  <section class="panel panel--result">
+    <div class="result__toolbar">
+      <div class="tabs" id="result-tabs">
+        <button class="tab is-active" data-tab="summary">总览</button>
+        <button class="tab" data-tab="plans">三类方案</button>
+        <button class="tab" data-tab="validate">参数校验</button>
+        <button class="tab" data-tab="memory">显存</button>
+        <button class="tab" data-tab="compute">计算</button>
+        <button class="tab" data-tab="comm">通信</button>
+        <button class="tab" data-tab="solve">配置求解</button>
+        <button class="tab" data-tab="launch">镜像与启动</button>
+        <button class="tab" data-tab="log">日志</button>
+      </div>
+      <span class="status" id="status-line"></span>
+    </div>
+
+    <div class="result__body">
+      <div class="empty" id="result-empty">
+        <div class="empty__icon">◍</div>
+        <p>选择一个预设模型或输入 HF 链接，然后点击「开始仿真」。</p>
+      </div>
+
+      <div class="tab-pane is-active" data-pane="summary">
+        <div class="kpi-grid" id="kpi-grid"></div>
+        <div class="split">
+          <div class="card">
+            <h3>模型摘要</h3>
+            <div id="model-card"></div>
+          </div>
+          <div class="card">
+            <h3>并行策略</h3>
+            <div id="parallel-card"></div>
+          </div>
+        </div>
+        <div class="card">
+          <h3>结论建议</h3>
+          <div id="advice-box" class="advice"></div>
+        </div>
+      </div>
+
+      <div class="tab-pane" data-pane="memory">
+        <div class="card"><h3>各 PP Stage 显存</h3><div id="memory-table"></div></div>
+      </div>
+
+      <div class="tab-pane" data-pane="compute">
+        <div class="card">
+          <h3>算子计算明细</h3>
+          <p class="hint">来源列中 <code>builtin profile</code> 表示命中仓库内置实测 Profile，<code>theoretical</code> 表示按理论效率公式计算。</p>
+          <div id="compute-table"></div>
+        </div>
+      </div>
+
+      <div class="tab-pane" data-pane="comm">
+        <div class="card"><h3>通信域耗时</h3><div id="comm-table"></div></div>
+      </div>
+
+      <div class="tab-pane" data-pane="plans">
+        <div class="card">
+          <h3>三类推荐方案</h3>
+          <p class="hint">最低可训练方案以最小卡数为目标；推荐稳定方案保留安全显存余量并避免通信主导；
+          推荐性能方案在资源上限内按吞吐排序。三者数值均来自同一估计器。</p>
+          <div id="plans-kernel-note" class="notice notice--info" hidden></div>
+          <div id="plans-box"></div>
+        </div>
+      </div>
+
+      <div class="tab-pane" data-pane="validate">
+        <div class="card">
+          <h3>参数合法性</h3>
+          <p class="hint">并行整除性、Batch 关系、数据量换算与检查点设置的校验结果。</p>
+          <div id="validate-box"></div>
+        </div>
+      </div>
+
+      <div class="tab-pane" data-pane="solve">
+        <div id="solve-box"></div>
+      </div>
+
+      <div class="tab-pane" data-pane="launch">
+        <div class="card">
+          <h3>训练镜像</h3>
+          <p class="hint">来自光合开发者社区 Harbor 仓库。标注「未在目标环境验证」的模板不会误导为可直接运行。</p>
+          <div class="field">
+            <label class="field__label" for="img-framework">按框架筛选</label>
+            <select id="img-framework" class="input input--select"></select>
+          </div>
+          <div id="images-box"></div>
+        </div>
+        <div class="card">
+          <h3>训练模板与启动命令</h3>
+          <p class="hint">选择模板后导出 YAML、Shell 与 Docker 命令。</p>
+          <div class="field">
+            <label class="field__label" for="tpl-select">训练模板</label>
+            <select id="tpl-select" class="input input--select"></select>
+          </div>
+          <div class="field">
+            <label class="field__label" for="tpl-image">镜像（可选）</label>
+            <input type="text" id="tpl-image" class="input" placeholder="harbor.sourcefind.cn:5443/hcu/...:tag" />
+          </div>
+          <div class="field">
+            <label class="field__label" for="tpl-model">模型路径</label>
+            <input type="text" id="tpl-model" class="input" placeholder="/models/Qwen3-8B" />
+          </div>
+          <button class="btn" id="btn-render-launch">生成启动配置</button>
+          <div id="launch-box"></div>
+        </div>
+      </div>
+
+      <div class="tab-pane" data-pane="log">
+        <pre class="log" id="log-box"></pre>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
