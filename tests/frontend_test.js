@@ -31,7 +31,7 @@ const appJs = fs.readFileSync(path.join(ROOT, 'static/js/app.js'), 'utf8');
 const FIXTURES = {
   '/api/bootstrap': {
     ok: true,
-    simulator: { repo: '/root/hygon/train_web/hcu-train-simulator', version: 'source-checkout' },
+    simulator: { repo: '/path/to/hcu-train-simulator', version: 'source-checkout' },
     families: [],
     proxy: {},
     operator_profiles: [],
@@ -98,7 +98,7 @@ const FIXTURES = {
   '/api/v1/images': {
     ok: true,
     count: 1,
-    source: { path: '/root/hygon/dcu-toolkit-skills-master/env/dcu-image-hub/data/sourcefind_dcu_images.json',
+    source: { path: '/path/to/sourcefind_dcu_images.json',
                fetched_at: '2026-09-02' },
     frameworks: [{ framework: 'megatron', tag_count: 2 }],
     images: [{

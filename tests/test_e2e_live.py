@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 import urllib.error
 import urllib.request
 
@@ -56,7 +57,7 @@ def main() -> int:
     status, body = post("/api/v1/training/estimates", {
         "mode": "sft_full",
         "hardware_id": "bw1000",
-        "model_config_path": "/root/hygon/train_web/hcu-train-web/catalog/models/qwen3-8b/config.json",
+        "model_config_path": str(MODEL_CONFIG),
         "parallel": {"tp_size": 2, "pp_size": 1, "cp_size": 1, "ep_size": 1,
                      "num_gpus": 8, "micro_batch_size": 1,
                      "global_batch_size": 256, "seq_length": 4096},
@@ -76,7 +77,7 @@ def main() -> int:
     status, body = post("/api/v1/training/search", {
         "mode": "sft_full",
         "hardware_id": "bw1000",
-        "model_config_path": "/root/hygon/train_web/hcu-train-web/catalog/models/qwen3-8b/config.json",
+        "model_config_path": str(MODEL_CONFIG),
         "parallel": {"tp_size": 2, "pp_size": 1, "cp_size": 1, "ep_size": 1,
                      "num_gpus": 8, "micro_batch_size": 1,
                      "global_batch_size": 256, "seq_length": 4096},
@@ -94,7 +95,7 @@ def main() -> int:
     status, body = post("/api/v1/training/search", {
         "mode": "grpo",
         "hardware_id": "bw1000",
-        "model_config_path": "/root/hygon/train_web/hcu-train-web/catalog/models/qwen3-8b/config.json",
+        "model_config_path": str(MODEL_CONFIG),
         "parallel": {"tp_size": 2, "num_gpus": 8},
     })
     check("GRPO 返回 422", status == 422, str(status))

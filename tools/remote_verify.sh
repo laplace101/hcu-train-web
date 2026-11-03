@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-cd /root/hcu-train-web-deploy/hcu-train-web
+cd ${HCU_DEPLOY_DIR:-/root/hcu-train-web-deploy}/hcu-train-web
 PY=./.venv/bin/python
 export PYTHONIOENCODING=utf-8
 export PATH="$PWD/.venv/bin:$PATH"

@@ -4,10 +4,10 @@
 # takes a tarball backup of the current app before touching anything.
 set -euo pipefail
 
-APP=/root/hcu-train-web-deploy
-ZIP=/root/hcu-train-web-deploy-new.zip
+APP="${HCU_DEPLOY_DIR:-/root/hcu-train-web-deploy}"
+ZIP="${HCU_DEPLOY_ZIP:-$APP-new.zip}"
 TS=$(date +%Y%m%d-%H%M%S)
-BACKUP="/root/hcu-train-web-backup-$TS.tar.gz"
+BACKUP="${HCU_DEPLOY_BACKUP:-/root/hcu-train-web-backup-$TS.tar.gz}"
 
 echo "=== [1/5] stop service ==="
 cd "$APP"

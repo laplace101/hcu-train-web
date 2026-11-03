@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-APP=/root/hcu-train-web-deploy/hcu-train-web
+APP=${HCU_DEPLOY_DIR:-/root/hcu-train-web-deploy}/hcu-train-web
 echo "=== process alive? ==="
 if [ -f "$APP/runtime/server.pid" ]; then
     pid=$(cat "$APP/runtime/server.pid")
