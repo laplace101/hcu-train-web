@@ -35,6 +35,7 @@ from engine import catalog as catalog_module
 from engine import config_builder, engine, hf_client, net, paths
 
 from api.routes import api as api_v1
+from services import estimates as estimates_service
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
 app.config["JSON_AS_ASCII"] = False
@@ -168,6 +169,14 @@ def api_simulate():
         outcome = engine.simulate(spec["config"], name_hint="simulate")
         outcome["elapsed_ms"] = round((time.perf_counter() - started) * 1000, 1)
         outcome["model_source"] = spec["source_info"]
+        # Measured LoRA benchmarks from the local bench.db, read-only.
+        # A failure here must never break the simulation.
+        try:
+            outcome["measured"] = estimates_service.measured_for_legacy(
+                spec["config"], spec["source_info"], outcome
+            )
+        except Exception as exc:  # noqa: BLE001
+            outcome["measured"] = {"available": False, "reason": f"实测数据读取失败：{exc}"}
         return jsonify({"ok": True, "result": outcome})
     except engine.SimulationError as exc:
         return jsonify({"ok": False, "error": str(exc), "log": exc.log}), 400

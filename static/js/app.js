@@ -824,6 +824,7 @@ async function runSolve() {
     state.plans = payload.plans;
     renderPlans(payload.plans, payload.plans?._meta, payload.mode_kernel_note);
     renderIssues(payload.issues);
+    renderMeasured(payload.measured);
     $('#result-empty').hidden = true;
     updateDataDerived();
     setStatus(`求解完成 · ${payload.elapsed_ms} ms`, 'ok');
@@ -872,6 +873,112 @@ async function runSearch() {
     toast(error.message, 'bad');
     $('#solve-box').innerHTML = `<div class="note">${escapeHtml(error.message)}</div>`;
   } finally { busy(false); }
+}
+
+// ---------------------------------------------------------------- measured data
+// The local bench.db holds real LoRA fine-tuning runs on BW1000. It is
+// reference data from the same hardware — not a validation of the estimate,
+// because the estimator models full-parameter training while LoRA freezes
+// the base weights. The card says so instead of implying the numbers agree.
+const MATCH_QUALITY_LABEL = {
+  exact: '卡数 / 序列长度 / micro-batch 均一致',
+  cards_and_seq: '卡数与序列长度一致，micro-batch 不同',
+  cards_only: '仅卡数一致',
+  model_only: '同模型，配置不同',
+};
+
+function renderMeasured(measured) {
+  const card = $('#measured-card');
+  const box = $('#measured-box');
+  if (!card || !box) return;
+
+  if (!measured || !measured.available) {
+    card.hidden = true;
+    box.innerHTML = '';
+    return;
+  }
+
+  card.hidden = false;
+  box.innerHTML = '';
+
+  if (!measured.matched) {
+    box.appendChild(el('div', { class: 'notice' },
+      measured.reason || '实测库中没有该模型的数据'));
+    return;
+  }
+
+  const rows = [];
+  rows.push(['实测模型', (measured.model_names || []).join(' / ')]);
+  rows.push(['实测记录数', `${measured.row_count} 条成功${measured.oom_count ? `，${measured.oom_count} 条 OOM` : ''}`]);
+  rows.push(['匹配程度', MATCH_QUALITY_LABEL[measured.match_quality] || measured.match_quality]);
+
+  const kv = el('dl', { class: 'kv' });
+  rows.forEach(([k, v]) => {
+    kv.appendChild(el('dt', {}, k));
+    kv.appendChild(el('dd', {}, String(v)));
+  });
+  box.appendChild(kv);
+
+  // Throughput: the one dimension where the two are broadly comparable.
+  if (measured.estimate_tgs && measured.measured_tgs) {
+    const dev = measured.tgs_deviation_percent;
+    const tone = Math.abs(dev) <= 20 ? 'kpi--ok' : Math.abs(dev) <= 50 ? 'kpi--warn' : 'kpi--bad';
+    const grid = el('div', { class: 'kpi-grid kpi-grid--compact' });
+    grid.appendChild(kpi('估算 TGS', fmtInt(measured.estimate_tgs), '', '每卡 tokens/s'));
+    grid.appendChild(kpi('实测 TGS', fmtInt(measured.measured_tgs), '', '每卡 tokens/s', tone));
+    if (dev !== null && dev !== undefined) {
+      grid.appendChild(kpi('偏差', `${dev > 0 ? '+' : ''}${fmt(dev, 1)}`, '%',
+        dev > 0 ? '估算高于实测' : '估算低于实测', tone));
+    }
+    box.appendChild(grid);
+  }
+
+  // Memory: shown, but explicitly marked as not comparable.
+  if (measured.estimate_peak_gib || measured.measured_peak_gib) {
+    const memKv = el('dl', { class: 'kv' });
+    memKv.appendChild(el('dt', {}, '估算峰值显存'));
+    memKv.appendChild(el('dd', {}, measured.estimate_peak_gib != null
+      ? `${fmt(measured.estimate_peak_gib, 2)} GiB（全参训练）` : '—'));
+    memKv.appendChild(el('dt', {}, '实测峰值显存'));
+    memKv.appendChild(el('dd', {}, measured.measured_peak_gib != null
+      ? `${fmt(measured.measured_peak_gib, 2)} GiB（LoRA，基座冻结）` : '—'));
+    box.appendChild(memKv);
+  }
+
+  const best = measured.best_match || {};
+  const cfg = el('p', { class: 'hint' },
+    `最佳实测配置：${best.gpu_count ?? '—'} 卡 · bs ${best.bs ?? '—'} · ga ${best.grad_accum ?? '—'} · `
+    + `seq ${best.cutoff_len ?? '—'} · LoRA r=${best.lora_rank ?? '—'} · ${best.ds_config || 'none'} · `
+    + `单步 ${best.step_time_s ?? '—'} s · 峰值 ${best.peak_mem_mib ?? '—'} MiB`);
+  box.appendChild(cfg);
+
+  box.appendChild(el('div', { class: 'notice notice--info' }, measured.comparability_note));
+
+  if (measured.rows && measured.rows.length > 1) {
+    const details = el('details', { class: 'measured-details' });
+    details.appendChild(el('summary', {}, `查看全部 ${measured.rows.length} 条实测记录`));
+    const table = el('table', { class: 'table' });
+    table.appendChild(el('thead', {}, el('tr', {},
+      el('th', {}, '卡数'), el('th', {}, 'bs'), el('th', {}, 'ga'), el('th', {}, 'seq'),
+      el('th', {}, 'r'), el('th', {}, 'DS'), el('th', {}, '单步 s'),
+      el('th', {}, '每卡 tok/s'), el('th', {}, '峰值 MiB'))));
+    const tbody = el('tbody');
+    measured.rows.forEach(r => {
+      tbody.appendChild(el('tr', {},
+        el('td', {}, String(r.gpu_count ?? '—')),
+        el('td', {}, String(r.bs ?? '—')),
+        el('td', {}, String(r.grad_accum ?? '—')),
+        el('td', {}, String(r.cutoff_len ?? '—')),
+        el('td', {}, String(r.lora_rank ?? '—')),
+        el('td', {}, String(r.ds_config || 'none')),
+        el('td', {}, String(r.step_time_s ?? '—')),
+        el('td', {}, String(r.tokens_per_s ?? '—')),
+        el('td', {}, String(r.peak_mem_mib ?? '—'))));
+    });
+    table.appendChild(tbody);
+    details.appendChild(table);
+    box.appendChild(details);
+  }
 }
 
 // ---------------------------------------------------------------- images & launch
@@ -1038,6 +1145,7 @@ function renderSimulation(result) {
   grid.appendChild(kpi('通信占比', fmt(s.comm_percent, 1), '%', `计算占比 ${fmt(s.compute_percent, 1)}%`,
     s.comm_percent > 50 ? 'kpi--warn' : ''));
 
+  renderMeasured(result.measured);
   renderParallelCard(result);
   renderMemoryTable(result);
   renderComputeTable(result);

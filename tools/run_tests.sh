@@ -31,6 +31,7 @@ run() {
 
 run "API v1 分层接口"    "$PY" tests/test_api_v1.py
 run "镜像与启动命令"      "$PY" tests/test_launch.py
+run "实测数据接入"        "$PY" tests/test_measured.py
 
 if command -v node >/dev/null 2>&1 && [ -d node_modules/jsdom ]; then
   run "前端 DOM 流程"     node tests/frontend_test.js

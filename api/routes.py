@@ -31,6 +31,7 @@ from domain.scenarios import (
 )
 from estimators.adapter import EstimationError, simulator_available, simulator_version
 from repositories import images as image_repo
+from repositories import measured as measured_repo
 from repositories import templates as template_repo
 from repositories.hardware import describe_hardware, describe_stacks, resolve_hardware
 from services import estimates as estimate_service
@@ -356,3 +357,45 @@ def render_launch():
     # The plan's parallelism may be nested under "parallel"; normalise it so
     # the renderer sees the same shape the estimator produced.
     return jsonify({"ok": True, **rendered})
+
+# ---------------------------------------------------------------------------
+# Measured benchmark data (read-only)
+# ---------------------------------------------------------------------------
+
+
+@api.get("/measured/info")
+def measured_info():
+    """Where the measured data comes from."""
+    return jsonify({"ok": True, **measured_repo.database_info()})
+
+
+@api.get("/measured/models")
+def measured_models():
+    """Every model present in the measured database."""
+    models = measured_repo.list_measured_models()
+    return jsonify({"ok": True, "models": models, "count": len(models)})
+
+
+@api.get("/measured")
+def measured_rows():
+    """Measured rows, filterable by catalogue slug and card count."""
+    slug = request.args.get("slug")
+    model = request.args.get("model")
+    gpu_count = request.args.get("gpu_count", type=int)
+    status = request.args.get("status", "OK")
+    limit = request.args.get("limit", default=50, type=int)
+    result = measured_repo.query_measured(
+        slug=slug, model=model, gpu_count=gpu_count,
+        status=status or None, limit=limit,
+    )
+    return jsonify({"ok": True, **result})
+
+
+@api.get("/measured/summary")
+def measured_summary():
+    """Aggregate measured rows for one catalogue slug."""
+    slug = request.args.get("slug")
+    if not slug:
+        return _error("bad_request", "需要 slug 参数")
+    summary = measured_repo.summarise_for_slug(slug)
+    return jsonify({"ok": True, **summary})

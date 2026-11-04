@@ -29,6 +29,7 @@ from domain.scenarios import MODE_SPECS, TrainingMode, TrainingScenario
 from estimators import adapter
 from estimators.adapter import UnsupportedModeError
 from engine import config_builder
+from repositories import measured as measured_repo
 from repositories.hardware import HARDWARE_PROFILES, resolve_hardware
 from services.validation import has_errors, validate_scenario
 
@@ -239,6 +240,285 @@ def _classify_plan(
     return ("stable" if not reasons else "risky"), reasons
 
 
+def _measured_match_key(
+    row: dict[str, Any], gpus: int | None, seq: int | None, mbs: int
+) -> tuple:
+    """Sort key that prefers the row closest to the estimate.
+
+    Priority: same card count, then the same sequence length, then the
+    micro-batch size closest to the estimate, then the highest throughput.
+    """
+    return (
+        0 if row.get("gpu_count") == gpus else 1,
+        0 if row.get("cutoff_len") == seq else 1,
+        abs((row.get("bs") or 0) - mbs),
+        -(row.get("tokens_per_s") or 0),
+    )
+
+
+def measured_comparison(
+    scenario: TrainingScenario,
+    facts: dict[str, Any],
+    plans: dict[str, Any],
+    hardware: Any,
+) -> dict[str, Any]:
+    """Attach measured benchmark rows to an estimate.
+
+    The measured data is LoRA fine-tuning on real BW1000 hardware, while the
+    estimator models full-parameter training. The two are therefore *not*
+    directly comparable, and the payload says so explicitly:
+
+      * the throughput numbers are close enough to be a sanity check;
+      * the memory numbers are not comparable at all, because LoRA freezes
+        the base weights — no base gradients, no base optimiser state.
+
+    Nothing here is presented as a validation of the estimate; it is
+    reference data from the same hardware.
+    """
+    if not measured_repo.available():
+        return {
+            "available": False,
+            "reason": "本机未找到实测数据库 bench.db",
+        }
+
+    # Which catalogue slug does this estimate correspond to?
+    slug = scenario.model_slug
+    if not slug:
+        # Fall back to matching the catalogue by the model's architecture.
+        slug = _match_slug_by_facts(facts)
+    if not slug:
+        return {
+            "available": True,
+            "matched": False,
+            "reason": "该模型不在实测数据库的覆盖范围内",
+        }
+
+    summary = measured_repo.summarise_for_slug(slug)
+    if not summary.get("rows"):
+        return {
+            "available": True,
+            "matched": False,
+            "slug": slug,
+            "reason": summary.get("reason") or "实测库中没有该模型的成功记录",
+        }
+
+    rows = summary["rows"]
+    gpus = scenario.num_gpus
+    seq = scenario.parallel.seq_length
+
+    same_gpus = [r for r in rows if r.get("gpu_count") == gpus]
+    same_seq = [r for r in (same_gpus or rows) if r.get("cutoff_len") == seq]
+    candidates = same_seq or same_gpus or rows
+
+    mbs = scenario.parallel.micro_batch_size
+    best = sorted(candidates, key=lambda r: _measured_match_key(r, gpus, seq, mbs))[0]
+
+    # Compare the estimate against the measurement.
+    estimate_tgs = None
+    current = plans.get("current") or {}
+    if current.get("tgs"):
+        estimate_tgs = current["tgs"]
+    elif plans.get("performance", {}).get("tgs"):
+        estimate_tgs = plans["performance"]["tgs"]
+
+    measured_tgs = best.get("tokens_per_s")
+    deviation = None
+    if estimate_tgs and measured_tgs:
+        deviation = round((estimate_tgs - measured_tgs) / measured_tgs * 100, 1)
+
+    return {
+        "available": True,
+        "matched": True,
+        "slug": slug,
+        "model_names": summary.get("model_names"),
+        "source": summary.get("source"),
+        "measured_is_lora": True,
+        "comparability_note": (
+            "实测数据为 LoRA 微调（基座冻结，无基座梯度与优化器状态），"
+            "估算为全参训练内核。吞吐量可作量级参照，显存不可直接对比——"
+            "LoRA 冻结基座后显存显著低于全参估算属预期现象。"
+        ),
+        "estimate_tgs": estimate_tgs,
+        "measured_tgs": measured_tgs,
+        "tgs_deviation_percent": deviation,
+        "estimate_peak_gib": current.get("peak_gib"),
+        "measured_peak_gib": (
+            round(best["peak_mem_mib"] / 1024, 2) if best.get("peak_mem_mib") else None
+        ),
+        "best_match": best,
+        "match_quality": _match_quality(best, gpus, seq, mbs),
+        "match_bs": best.get("bs"),
+        "estimate_bs": mbs,
+        "row_count": summary.get("count"),
+        "oom_count": summary.get("oom_count"),
+        "gpu_counts": summary.get("gpu_counts"),
+        "rows": rows[:20],
+    }
+
+
+def _match_quality(
+    row: dict[str, Any], gpus: int | None, seq: int | None, mbs: int
+) -> str:
+    """How close the matched row is to the estimate's configuration.
+
+    The micro-batch size drives throughput directly, so a row that only
+    matches on cards and sequence length is reported separately instead of
+    being presented as an equal-configuration comparison.
+    """
+    same_gpus = row.get("gpu_count") == gpus
+    same_seq = row.get("cutoff_len") == seq
+    same_bs = row.get("bs") == mbs
+    if same_gpus and same_seq and same_bs:
+        return "exact"
+    if same_gpus and same_seq:
+        return "cards_and_seq"
+    if same_gpus:
+        return "cards_only"
+    return "model_only"
+
+
+def _match_slug_by_facts(facts: dict[str, Any]) -> str | None:
+    """Find a catalogue slug from the model's architecture facts."""
+    if not facts:
+        return None
+    hidden = facts.get("hidden_size") or 0
+    layers = facts.get("num_hidden_layers") or 0
+    if not hidden:
+        return None
+    cat_dir = APP_ROOT / "catalog" / "models"
+    if not cat_dir.exists():
+        return None
+    for path in sorted(cat_dir.iterdir()):
+        config = path / "config.json"
+        if not config.exists():
+            continue
+        try:
+            data = json.loads(config.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        text = data.get("text_config") if isinstance(data.get("text_config"), dict) else data
+        if (text.get("hidden_size") == hidden
+                and text.get("num_hidden_layers") == layers):
+            return path.name
+    return None
+
+
+def _catalog_slug_by_name(name: str | None) -> str | None:
+    """Resolve a catalogue display name to its directory slug.
+
+    `catalog.json` is the authority: it maps slug -> name -> hf_id. The
+    normalised comparison covers "Qwen3.5-2B" vs "qwen3-5-2b".
+    """
+    if not name:
+        return None
+    target = name.strip().lower()
+    flat = target.replace("-", "").replace(".", "").replace("_", "").replace("/", "")
+
+    catalog_file = APP_ROOT / "catalog" / "catalog.json"
+    if catalog_file.exists():
+        try:
+            data = json.loads(catalog_file.read_text(encoding="utf-8"))
+            for entry in data.get("models", []):
+                for field in ("slug", "name", "hf_id"):
+                    value = entry.get(field)
+                    if not value:
+                        continue
+                    if value.lower() == target:
+                        return entry.get("slug")
+                    if value.lower().replace("-", "").replace(".", "").replace("_", "").replace("/", "") == flat:
+                        return entry.get("slug")
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    # Fall back to the directory names.
+    cat_dir = APP_ROOT / "catalog" / "models"
+    if cat_dir.exists():
+        for path in sorted(cat_dir.iterdir()):
+            if path.is_dir() and path.name.lower().replace("-", "").replace(".", "").replace("_", "") == flat:
+                return path.name
+    return None
+
+
+def measured_for_legacy(
+    config: dict[str, Any], source_info: dict[str, Any], outcome: dict[str, Any]
+) -> dict[str, Any]:
+    """Attach measured benchmark data to a legacy `/api/simulate` response.
+
+    The legacy route has no `TrainingScenario`, so the pieces needed for a
+    comparison are read straight out of the simulator config. The result is
+    the same shape as `measured_comparison` returns, so the UI renders both
+    identically.
+    """
+    if not measured_repo.available():
+        return {"available": False, "reason": "本机未找到实测数据库 bench.db"}
+
+    parallel = config.get("parallel_config") or {}
+    gpus = parallel.get("num_gpus")
+    seq = parallel.get("seq_length")
+    mbs = parallel.get("micro_batch_size")
+
+    # A preset model gives its slug directly; a custom path is matched by
+    # architecture instead.
+    slug = None
+    if (source_info or {}).get("kind") == "preset":
+        # The preset label is the display name; resolve it to the catalogue
+        # directory slug so the measured lookup uses the same key.
+        slug = _catalog_slug_by_name((source_info or {}).get("label"))
+
+    facts = model_facts(load_model_facts(None, config.get("model_path")))
+    if not slug:
+        slug = _match_slug_by_facts(facts)
+    if not slug:
+        return {"available": True, "matched": False,
+                "reason": "该模型不在实测数据库的覆盖范围内"}
+
+    summary = measured_repo.summarise_for_slug(slug)
+    if not summary.get("rows"):
+        return {"available": True, "matched": False, "slug": slug,
+                "reason": summary.get("reason") or "实测库中没有该模型的成功记录"}
+
+    rows = summary["rows"]
+    same_gpus = [r for r in rows if r.get("gpu_count") == gpus]
+    same_seq = [r for r in (same_gpus or rows) if r.get("cutoff_len") == seq]
+    candidates = same_seq or same_gpus or rows
+    best = sorted(candidates, key=lambda r: _measured_match_key(r, gpus, seq, mbs or 1))[0]
+
+    estimate_tgs = (outcome.get("summary") or {}).get("tgs")
+    measured_tgs = best.get("tokens_per_s")
+    deviation = None
+    if estimate_tgs and measured_tgs:
+        deviation = round((estimate_tgs - measured_tgs) / measured_tgs * 100, 1)
+
+    return {
+        "available": True,
+        "matched": True,
+        "slug": slug,
+        "model_names": summary.get("model_names"),
+        "source": summary.get("source"),
+        "measured_is_lora": True,
+        "comparability_note": (
+            "实测数据为 LoRA 微调（基座冻结，无基座梯度与优化器状态），"
+            "估算为全参训练内核。吞吐量可作量级参照，显存不可直接对比——"
+            "LoRA 冻结基座后显存显著低于全参估算属预期现象。"
+        ),
+        "estimate_tgs": estimate_tgs,
+        "measured_tgs": measured_tgs,
+        "tgs_deviation_percent": deviation,
+        "estimate_peak_gib": outcome.get("peak_memory_gib"),
+        "measured_peak_gib": (
+            round(best["peak_mem_mib"] / 1024, 2) if best.get("peak_mem_mib") else None
+        ),
+        "best_match": best,
+        "match_quality": _match_quality(best, gpus, seq, mbs or 1),
+        "match_bs": best.get("bs"),
+        "estimate_bs": mbs,
+        "row_count": summary.get("count"),
+        "oom_count": summary.get("oom_count"),
+        "gpu_counts": summary.get("gpu_counts"),
+        "rows": rows[:20],
+    }
+
+
 def estimate(
     scenario: TrainingScenario,
     *,
@@ -336,6 +616,7 @@ def estimate(
         "mode_label": spec.label,
         "mode_kernel_note": spec.kernel_note,
         "hardware": hardware.to_dict(),
+        "measured": measured_comparison(scenario, facts, plans, hardware),
         "model": facts,
         "plans": plans,
         "issues": [i.to_dict() for i in issues],

@@ -416,3 +416,25 @@ table.data .num { text-align: right; }
   line-height: 1.55;
   opacity: 0.78;
 }
+
+/* ------------------------------------------------------------ measured data
+   Reference rows from the local bench.db. Shown next to the estimate with an
+   explicit comparability note, because the measured runs are LoRA while the
+   estimator models full-parameter training. */
+.measured-details {
+  margin-top: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+.measured-details summary {
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  user-select: none;
+}
+.measured-details summary:hover { color: var(--text); }
+.measured-details .table { margin-top: 8px; }
+.kpi-grid--compact {
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  margin: 10px 0;
+}

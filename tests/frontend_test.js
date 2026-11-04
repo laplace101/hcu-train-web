@@ -76,6 +76,12 @@ const FIXTURES = {
     elapsed_ms: 1234.5,
     mode: 'sft_full',
     mode_kernel_note: '预训练与「全参数 SFT」当前共用同一套计算内核，资源估算数值一致。',
+    measured: { available: true, matched: true, slug: 'qwen3-5-2b',
+                estimate_tgs: 6988.34, measured_tgs: 6476.69,
+                tgs_deviation_percent: 7.9, match_quality: 'exact',
+                comparability_note: '实测为 LoRA，估算为全参。', row_count: 14,
+                best_match: { gpu_count: 8, bs: 4, cutoff_len: 2048 },
+                rows: [] },
     issues: [
       { field: 'global_batch_size', severity: 'error',
         message: 'Global Batch 101 不能被 MBS(1) × DP(4) = 4 整除（余数 1）',
@@ -95,6 +101,43 @@ const FIXTURES = {
     },
   },
   '/api/v1/training/validate': { ok: false, issues: [] },
+  '/api/simulate': {
+    ok: true,
+    result: {
+      summary: { iteration_ms: 9377.91, compute_ms: 8200, communication_ms: 1177,
+                 tgs: 6988.34, mfu: 0.31, mfu_percent: 31, comm_percent: 12.5,
+                 compute_percent: 87.5, tokens_per_iteration: 1048576,
+                 actual_tflops: 480, model_size_b: 2.21 },
+      peak_memory_gib: 63.72, hbm_gib: 64, model_adapter: 'qwen3_5',
+      parallel: { num_gpus: 8, tp_size: 1, pp_size: 1, cp_size: 1, dp_size: 8,
+                  ep_size: 1, etp_size: 1, seq_length: 2048, micro_batch_size: 4,
+                  global_batch_size: 256, use_fp8_training: false,
+                  full_recompute: false, overlap_mode: 'auto' },
+      memory: [{ pp_rank: 0, wgo_gib: 40.1, activation_gib: 23.6, total_gib: 63.72,
+                 hbm_gib: 64, utilization: 99.6, feasible: true }],
+      communication: [], compute_details: [], log: 'sim log',
+      elapsed_ms: 1234,
+      measured: {
+        available: true, matched: true, slug: 'qwen3-5-2b',
+        model_names: ['Qwen/Qwen3.5-2B'], measured_is_lora: true,
+        estimate_tgs: 6988.34, measured_tgs: 6476.69,
+        tgs_deviation_percent: 7.9,
+        estimate_peak_gib: 63.72, measured_peak_gib: 8.77,
+        match_quality: 'exact', match_bs: 4, estimate_bs: 4,
+        row_count: 14, oom_count: 0, gpu_counts: [8],
+        comparability_note: '实测数据为 LoRA 微调（基座冻结），估算为全参训练内核。',
+        best_match: { gpu_count: 8, bs: 4, grad_accum: 8, cutoff_len: 2048,
+                      lora_rank: 8, ds_config: 'none', step_time_s: 10.119,
+                      peak_mem_mib: 8978, tokens_per_s: 6476.69 },
+        rows: [
+          { gpu_count: 8, bs: 4, grad_accum: 8, cutoff_len: 2048, lora_rank: 8,
+            ds_config: 'none', step_time_s: 10.119, tokens_per_s: 6476.69, peak_mem_mib: 8978 },
+          { gpu_count: 8, bs: 8, grad_accum: 8, cutoff_len: 2048, lora_rank: 8,
+            ds_config: 'none', step_time_s: 18.587, tokens_per_s: 7051.62, peak_mem_mib: 11607 },
+        ],
+      },
+    },
+  },
   '/api/v1/images': {
     ok: true,
     count: 1,
@@ -400,6 +443,35 @@ async function main() {
     recomputeHint ? recomputeHint.textContent.slice(0, 40) : '');
   check('提示说明内核不建模',
     recomputeHint && recomputeHint.textContent.includes('尚未对重计算建模'));
+
+  console.log('\n=== ⑰ 实测数据卡片 ===');
+  // The legacy /api/simulate response carries the measured comparison.
+  doc.getElementById('btn-simulate')
+    .dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await new Promise(r => setTimeout(r, 300));
+
+  const measuredCard = doc.querySelector('#measured-card');
+  check('实测卡片可见', measuredCard && !measuredCard.hidden);
+  const measuredBox = doc.querySelector('#measured-box');
+  check('有实测内容', measuredBox && measuredBox.innerHTML.length > 100);
+  check('显示实测模型名', measuredBox.textContent.includes('Qwen/Qwen3.5-2B'));
+  // fmtInt uses en-US grouping, so 6988.34 renders as "6,988".
+  check('显示估算 TGS', measuredBox.textContent.includes('6,988'));
+  check('显示实测 TGS', measuredBox.textContent.includes('6,476'));
+  check('显示偏差', measuredBox.textContent.includes('7.9'),
+    measuredBox.textContent.match(/[-+]?\d+\.\d%/)?.[0] || '');
+  check('显示匹配程度',
+    measuredBox.textContent.includes('micro-batch 均一致'),
+    measuredBox.textContent.match(/卡数[^\n]{0,30}/)?.[0] || '');
+  check('标注 LoRA 不可比',
+    measuredBox.textContent.includes('LoRA') && measuredBox.textContent.includes('全参'));
+  check('显示估算显存(全参)', measuredBox.textContent.includes('63.72'));
+  check('显示实测显存(LoRA)', measuredBox.textContent.includes('8.77'));
+  check('显示最佳配置',
+    measuredBox.textContent.includes('最佳实测配置') && measuredBox.textContent.includes('bs 4'));
+  check('有实测记录明细表',
+    measuredBox.querySelectorAll('details tbody tr').length === 2,
+    String(measuredBox.querySelectorAll('details tbody tr').length));
 
   console.log('\n' + '='.repeat(46));
   if (failures.length) {
