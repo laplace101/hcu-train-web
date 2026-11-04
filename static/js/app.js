@@ -1253,6 +1253,20 @@ function renderSupportSummary(data) {
   if (!box) return;
   const totals = data.totals || {};
   box.innerHTML = '';
+
+  // The upstream simulator ships the same six adapters, so the limit is
+  // the kernel's architecture coverage — not this tool's. Show both
+  // behaviours so the difference is visible.
+  const upstream = data.upstream;
+  if (upstream) {
+    box.appendChild(el('div', { class: 'notice notice--info' }, [
+      el('strong', {}, `上游 hcu-train-simulator 同样是 ${upstream.adapter_count} 个适配器`),
+      el('span', {}, `（${upstream.adapters.join('、')}）`),
+      el('p', { class: 'hint' }, upstream.fallback_behaviour),
+      el('p', { class: 'hint' }, upstream.gate_behaviour),
+      el('p', { class: 'hint' }, upstream.gate_note),
+    ]));
+  }
   const row = el('div', { class: 'support-totals' });
   [
     ['可精确估算', totals.estimable, 'ok'],

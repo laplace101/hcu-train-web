@@ -168,6 +168,44 @@ def check_reference(
     return support
 
 
+#: How the upstream simulator treats a model it has no adapter for.
+#:
+#: `hcu-train-simulator` ships a `generic_gpt` fallback adapter with
+#: `fallback = True`, and its README states that an unknown model family
+#: "degrades to a generic Transformer/MoE scale approximation" with
+#: unrecognised fields ignored. So upstream does produce numbers for
+#: models it does not model — it just does not say how wrong they are.
+#:
+#: The compatibility gate in `services.compatibility` refuses some of those
+#: models instead. This table records which behaviour applies, so the
+#: interface can show the difference rather than hide it.
+UPSTREAM_BASELINE = {
+    "adapter_count": 6,
+    "adapters": ["qwen3", "qwen3_vl", "qwen3_5", "deepseek_v3", "glm5",
+                 "generic_gpt"],
+    "fallback_adapter": "generic_gpt",
+    "fallback_behaviour": (
+        "未知模型族降级为通用 Transformer/MoE 规模近似，"
+        "无法识别的额外字段被忽略并在终端打印假设"
+    ),
+    "gate_behaviour": (
+        "兼容性门禁在估算之前拒绝内核无法表示的模型，"
+        "并列出具体缺失项，不返回失真数字"
+    ),
+    "gate_note": (
+        "两者的差别不在模型数量，而在失真模型的处理方式。"
+        "内核的 generic 适配器对标准稠密解码器是正确的，"
+        "对注意力或专家布局不同的模型则不是——"
+        "例如 256 个专家的 MoE 被按一个稠密 FFN 计算"
+    ),
+}
+
+
+def upstream_baseline() -> dict[str, Any]:
+    """The upstream simulator's own model coverage, for comparison."""
+    return dict(UPSTREAM_BASELINE)
+
+
 def matrix() -> dict[str, Any]:
     """The full support matrix over the preset catalogue.
 
@@ -195,6 +233,7 @@ def matrix() -> dict[str, Any]:
             {"name": name, "description": description}
             for name, description in ADAPTER_DESCRIPTIONS.items()
         ],
+        "upstream": upstream_baseline(),
         "families": families,
         "models": rows,
         "totals": {

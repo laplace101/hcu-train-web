@@ -42,6 +42,14 @@ const FIXTURES = {
       { name: 'glm5', description: 'GLM-5，DSA 索引注意力' },
       { name: 'generic_gpt', description: '通用稠密解码器兜底' },
     ],
+    upstream: {
+      adapter_count: 6,
+      adapters: ['qwen3', 'qwen3_vl', 'qwen3_5', 'deepseek_v3', 'glm5', 'generic_gpt'],
+      fallback_adapter: 'generic_gpt',
+      fallback_behaviour: '未知模型族降级为通用 Transformer/MoE 规模近似',
+      gate_behaviour: '兼容性门禁在估算之前拒绝内核无法表示的模型',
+      gate_note: '差别不在模型数量，而在失真模型的处理方式',
+    },
     models: [
       { reference: 'qwen3-8b', status: 'estimable', status_label: '可精确估算',
         adapter: 'qwen3', adapter_description: 'Qwen3 稠密与 MoE',
@@ -624,6 +632,13 @@ async function main() {
   const supportRows = supportBox.querySelectorAll('.support-table tbody tr');
   check('渲染出模型行', supportRows.length === 3, String(supportRows.length));
   check('显示统计', supportSummary.textContent.includes('29'));
+  check('说明上游同样是 6 个适配器',
+    supportSummary.textContent.includes('上游') &&
+    supportSummary.textContent.includes('6 个适配器'),
+    supportSummary.textContent.match(/上游[^\n]{0,40}/)?.[0] || '');
+  check('说明两种行为的差别',
+    supportSummary.textContent.includes('差别不在模型数量'),
+    supportSummary.textContent.match(/差别不在[^\n]{0,30}/)?.[0] || '');
   check('列出适配器', supportSummary.textContent.includes('qwen3'));
   check('显示可精确估算', supportBox.textContent.includes('可精确估算'));
   check('显示近似标注', supportBox.textContent.includes('可估算（近似值）'));

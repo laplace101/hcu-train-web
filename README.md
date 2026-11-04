@@ -186,7 +186,12 @@ ModelScope 接入有白名单（`modelscope.cn` / `modelers.cn` 等）、SSRF �
 
 ### 6.3 模型支持矩阵
 
-内核只有 6 个适配器，且有一个通用兜底适配器 `generic_gpt`——任何模型都会
+**支持范围由内核决定，不是本工具的限制。** 上游
+[`HYGON-AI/hcu-train-simulator`](https://github.com/HYGON-AI/hcu-train-simulator)
+的 `models/` 目录里同样只有 6 个适配器——`qwen3`、`qwen3_vl`、`qwen3_5`、
+`deepseek_v3`、`glm5`、`generic_gpt`，本项目没有增减任何一个。
+
+内核还有一个通用兜底适配器 `generic_gpt`（`fallback = True`）——任何模型都会
 落到某个适配器上。所以失败从来不是"没有适配器"，而是"落到的适配器无法
 表示这个架构"。
 
@@ -212,6 +217,24 @@ ModelScope 接入有白名单（`modelscope.cn` / `modelers.cn` 等）、SSRF �
     GET  /api/v1/model-support              全量矩阵
     POST /api/v1/model-support/check        单模型查询
     GET  /api/v1/model-support/adapters     每个适配器读哪些配置字段
+
+**与上游的差别不在模型数量，而在失真模型的处理方式。** 上游 README 写明
+「未知模型族会降级为通用 Transformer/MoE 规模近似，无法识别的额外字段会被
+忽略并在终端打印假设」——也就是说上游会为它没有建模的模型给出数字。本项目
+的做法是在估算之前拦下一部分，列出缺失项而不是返回失真数字。
+
+两者的取舍：
+
+| | 上游 | 本项目 |
+|---|---|---|
+| 标准稠密解码器（Llama、Mistral、Phi、Gemma、Qwen2.5） | 通用近似 | 通用近似，标注「近似值」 |
+| MoE 但专家数字段内核读不到（MiniMax 全系） | 按稠密算，数字错 | 拒绝，列出缺失字段 |
+| 含 DSA 索引注意力（DeepSeek-V3.2 及以后） | 按 MLA 算，数字错 | 拒绝，列出缺失结构 |
+| 多模态但适配器不支持视觉塔（V4.1、GLM-4.6V） | 抛 Python 异常 | 拒绝，列出缺失结构 |
+
+之所以能做得比上游严格，是因为门禁直接调用内核的适配器解析与字段表，
+而不是复制一份。后者我已经错过两次（漏掉兜底适配器、把 `glm4_moe` 误配
+成 `glm5`）。
 
 **适配器选择由内核自己回答。** `services/compatibility.py` 调用内核的
 `resolve_model_adapter`，不复制它的匹配逻辑——复刻的版本错了两次（漏掉兜底

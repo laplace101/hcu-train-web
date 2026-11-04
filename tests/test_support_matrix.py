@@ -118,6 +118,25 @@ def main() -> int:
     check("每个适配器都说明读哪些字段",
           all(adapters[a]["reads"] for a in adapters))
 
+    print("\n=== ⑨ 上游对照 ===")
+    # The upstream simulator ships the same six adapters, so the limit is
+    # the kernel's coverage rather than this tool's.
+    r = client.get("/api/v1/model-support/upstream")
+    upstream = r.get_json()
+    check("上游对照 HTTP 200", r.status_code == 200)
+    check("上游同样是 6 个适配器", upstream.get("adapter_count") == 6,
+          str(upstream.get("adapter_count")))
+    check("列出适配器", len(upstream.get("adapters") or []) == 6)
+    check("记录兜底适配器", upstream.get("fallback_adapter") == "generic_gpt")
+    check("说明上游降级行为",
+          bool(upstream.get("fallback_behaviour")))
+    check("说明本项目的门禁行为",
+          bool(upstream.get("gate_behaviour")))
+
+    # The matrix payload carries the same comparison.
+    check("矩阵里带上游对照",
+          bool((body.get("upstream") or {}).get("fallback_adapter")))
+
     print("\n=== ⑦ 阻断与提示分离 ===")
     # A model the kernel can handle but whose adapter ignores some fields
     # must still be estimable, with a warning rather than a refusal.

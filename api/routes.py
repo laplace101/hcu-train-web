@@ -426,6 +426,17 @@ def model_support_check():
     return jsonify({"ok": True, **support.to_dict()})
 
 
+@api.get("/model-support/upstream")
+def model_support_upstream():
+    """The upstream simulator's own model coverage, for comparison.
+
+    The upstream `hcu-train-simulator` ships the same six adapters and a
+    `generic_gpt` fallback, so it produces numbers for models it does not
+    model. This endpoint states both behaviours side by side.
+    """
+    return jsonify({"ok": True, **support_matrix.upstream_baseline()})
+
+
 @api.get("/model-support/adapters")
 def model_support_adapters():
     """What each kernel adapter reads from a model config."""
