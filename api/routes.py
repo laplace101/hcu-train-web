@@ -482,15 +482,27 @@ def measured_envelope():
     return jsonify({"ok": True, **measured_compare.envelope()})
 
 
-@api.get("/measured/compare")
+@api.route("/measured/compare", methods=["GET", "POST"])
 def measured_compare_route():
     """Compare an estimate with the measured data.
 
     Mode-agnostic: the same comparison serves full-parameter, LoRA and
     RL estimates. The payload states whether the two are comparable.
+
+    The parameters may come from a JSON body or from the query string, so
+    the endpoint can be called from a browser address bar as well as from
+    the interface's JavaScript.
     """
     body = request.get_json(silent=True) or {}
-    slug = body.get("slug") or body.get("model_slug")
+    args = request.args
+
+    def pick(name: str, default=None):
+        value = body.get(name)
+        if value is None:
+            value = args.get(name)
+        return default if value is None else value
+
+    slug = pick("slug") or pick("model_slug")
     if not slug:
         return jsonify({"ok": False, "error": {
             "code": "validation_failed",
@@ -498,15 +510,24 @@ def measured_compare_route():
             "details": ["缺少模型标识"],
         }}), 400
 
+    def number(name):
+        value = pick(name)
+        if value is None or value == "":
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
     estimate = body.get("estimate") or {}
     result = measured_compare.compare(
         estimate,
         slug=slug,
-        gpu_count=body.get("gpu_count"),
-        seq_length=body.get("seq_length"),
-        micro_batch_size=body.get("micro_batch_size"),
-        mode=body.get("mode"),
-        measured_is_lora=bool(body.get("measured_is_lora")),
+        gpu_count=number("gpu_count"),
+        seq_length=number("seq_length"),
+        micro_batch_size=number("micro_batch_size"),
+        mode=pick("mode"),
+        measured_is_lora=str(pick("measured_is_lora", "")).lower() in {"1", "true", "yes"},
     )
     return jsonify({"ok": True, **result})
 

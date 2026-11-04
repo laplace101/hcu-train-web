@@ -129,7 +129,40 @@ def main() -> int:
     check("给出模型列表", isinstance(env.get("models"), list))
     check("给出模型数", env.get("model_count", 0) > 0, str(env.get("model_count")))
 
-    print("\n=== ⑦ 数据库未被修改 ===")
+    print("\n=== ⑦ 通用对照接口 ===")
+    from app import app
+
+    client = app.test_client()
+
+    r = client.get("/api/v1/measured/envelope")
+    check("覆盖范围接口 200", r.status_code == 200)
+    check("给出模型数", (r.get_json() or {}).get("model_count", 0) > 0)
+
+    r = client.get("/api/v1/measured/compare?slug=qwen3-8b&gpu_count=8&seq_length=4096")
+    body = r.get_json()
+    check("对照接口 200", r.status_code == 200)
+    check("对照接口找到记录", body.get("matched") is True)
+    # Without an estimate there is nothing to compute a deviation against,
+    # so the measured side is reported on its own.
+    check("对照接口给出实测吞吐", body.get("measured_tgs") is not None,
+          str(body.get("measured_tgs")))
+    check("对照接口标注口径", body.get("measured_is_lora") is True)
+    check("对照接口标记为不可比", body.get("comparable") is False)
+
+    r = client.post("/api/v1/measured/compare", json={
+        "slug": "qwen3-8b", "gpu_count": 8, "seq_length": 4096,
+        "estimate": {"tgs": 2809.57, "peak_gib": 53.0},
+    })
+    body = r.get_json()
+    check("POST 也能用", r.status_code == 200)
+    check("POST 带上估算值", body.get("estimate_tgs") == 2809.57)
+    check("POST 给出偏差", body.get("tgs_deviation_percent") is not None,
+          f"{body.get('tgs_deviation_percent')}%")
+
+    r = client.get("/api/v1/measured/compare")
+    check("缺参数返回 400", r.status_code == 400)
+
+    print("\n=== ⑧ 数据库未被修改 ===")
     after = db_checksum()
     check("校验和不变", before == after, after[:16])
 
