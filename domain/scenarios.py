@@ -95,11 +95,13 @@ MODE_SPECS: dict[TrainingMode, ModeSpec] = {
         mode=TrainingMode.SFT_LORA,
         label="LoRA-SFT",
         summary="低秩适配微调；基座冻结，只训练适配器参数",
-        modelled=False,
-        unmodelled_reason=(
-            "模拟器内核尚未建模 LoRA：冻结基座不产生基座梯度与优化器状态，"
-            "但反向传播仍需经过基座，激活与反向计算不能按可训练参数比例缩减。"
-            "直接套用全参步时会产生与真实训练不一致的数字。"
+        modelled=True,
+        unmodelled_reason="",
+        kernel_note=(
+            "LoRA 使用独立的资源模型，不套用全参训练数字。基座冻结后没有基座梯度与"
+            "基座优化器状态，但反向仍需经过基座，激活与反向计算不能按可训练参数比例缩减。"
+            "吞吐与显存的系数由本机实测基准库（BW1000 真机 LoRA 记录）拟合得出，"
+            "结果附置信度与实测来源。"
         ),
         param_groups=("data", "lora", "checkpoint"),
     ),
@@ -276,6 +278,10 @@ class TrainingScenario:
     lora_dropout: float = 0.05
     lora_target_modules: list[str] = field(default_factory=list)
     lora_train_embeddings: bool = False
+    #: DeepSpeed stage the calibration was fitted against.
+    lora_ds_config: str = "z3"
+    #: Whether Liger's fused kernels are enabled.
+    lora_liger: int = 1
     dpo_beta: float = 0.1
     dpo_preference_batch: int = 1
     grpo_group_size: int = 8

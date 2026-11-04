@@ -107,6 +107,8 @@ async function init() {
   renderHardware();
   renderParallelFields();
   renderDataFields();
+  renderLoraFields();
+  updateLoraVisibility();
   bindEvents();
   restoreDefaultModel();
 
@@ -152,6 +154,7 @@ function selectTask(key) {
   state.task = key;
   renderTasks();
   updateTaskNote();
+  updateLoraVisibility();
   loadTemplates();
 
   // Pretraining presets full recompute on; fine-tuning leaves it off.
@@ -783,6 +786,15 @@ function buildV1Payload() {
     use_distributed_optimizer: payload.parallel.use_distributed_optimizer ?? true,
     full_recompute: payload.parallel.full_recompute ?? false,
     use_fp8: payload.parallel.use_fp8_training ?? false,
+    lora: {
+      r: loraPayload().r,
+      alpha: loraPayload().alpha,
+      dropout: loraPayload().dropout,
+      target_modules: loraPayload().target === 'attn_only'
+        ? ['q_proj', 'k_proj', 'v_proj', 'o_proj'] : [],
+    },
+    lora_ds_config: loraPayload().ds_config,
+    lora_liger: loraPayload().liger,
     ...data,
   };
 }
@@ -873,6 +885,79 @@ async function runSearch() {
     toast(error.message, 'bad');
     $('#solve-box').innerHTML = `<div class="note">${escapeHtml(error.message)}</div>`;
   } finally { busy(false); }
+}
+
+// ---------------------------------------------------------------- lora parameters
+// LoRA has its own resource model, so it needs its own parameters: the
+// adapter rank and alpha, the target modules, and the training stack
+// (DeepSpeed stage, Liger's fused kernels) that the calibration was fitted
+// against.
+const LORA_FIELDS = [
+  { key: 'lora_r', label: 'LoRA rank (r)', type: 'number', value: 8,
+    hint: '实测数据为 r=8' },
+  { key: 'lora_alpha', label: 'LoRA alpha', type: 'number', value: 16,
+    hint: '缩放系数，通常为 r 的 2 倍' },
+  { key: 'lora_dropout', label: 'LoRA dropout', type: 'number', step: 'any', value: 0.05,
+    hint: '' },
+];
+
+function renderLoraFields() {
+  const grid = $('#lora-grid');
+  if (!grid) return;
+  grid.innerHTML = '';
+  LORA_FIELDS.forEach(field => {
+    const input = el('input', {
+      class: 'input', type: field.type, id: `lora-${field.key}`,
+      value: field.value,
+    });
+    if (field.step) input.setAttribute('step', field.step);
+    grid.appendChild(el('div', { class: 'field' },
+      el('label', { class: 'field__label', for: `lora-${field.key}` }, field.label),
+      input,
+      field.hint ? el('p', { class: 'hint' }, field.hint) : null));
+  });
+
+  const stack = el('div', { class: 'field' },
+    el('label', { class: 'field__label', for: 'lora-ds' }, 'DeepSpeed 阶段'));
+  const dsSelect = el('select', { class: 'input input--select', id: 'lora-ds' });
+  [['none', '不用 DeepSpeed'], ['z2', 'ZeRO-2'], ['z3', 'ZeRO-3']].forEach(([v, t]) => {
+    dsSelect.appendChild(el('option', { value: v, selected: v === 'z3' }, t));
+  });
+  stack.appendChild(dsSelect);
+  stack.appendChild(el('p', { class: 'hint' }, '实测库覆盖 none 与 z3'));
+  grid.appendChild(stack);
+
+  const ligerWrap = el('div', { class: 'field' },
+    el('label', { class: 'field__label' }, 'Liger 融合算子'));
+  const ligerInput = el('input', { type: 'checkbox', id: 'lora-liger', checked: true });
+  const ligerLabel = el('label', { class: 'toggle is-on', for: 'lora-liger' }, ligerInput, '启用');
+  ligerInput.addEventListener('change', () => {
+    ligerLabel.classList.toggle('is-on', ligerInput.checked);
+  });
+  ligerWrap.appendChild(ligerLabel);
+  ligerWrap.appendChild(el('p', { class: 'hint' }, '实测库覆盖 0 与 1；启用后显存显著下降'));
+  grid.appendChild(ligerWrap);
+}
+
+/** Show the LoRA block only for the LoRA mode. */
+function updateLoraVisibility() {
+  const block = $('#lora-block');
+  if (!block) return;
+  const isLora = modeValue() === 'sft_lora';
+  block.hidden = !isLora;
+  if (isLora && !$('#lora-grid').children.length) renderLoraFields();
+}
+
+/** The LoRA block's values, in the shape the API expects. */
+function loraPayload() {
+  return {
+    r: Number($('#lora-lora_r')?.value || 8),
+    alpha: Number($('#lora-lora_alpha')?.value || 16),
+    dropout: Number($('#lora-lora_dropout')?.value || 0.05),
+    target: $('#lora-target')?.value || 'all',
+    ds_config: $('#lora-ds')?.value || 'z3',
+    liger: $('#lora-liger')?.checked ? 1 : 0,
+  };
 }
 
 // ---------------------------------------------------------------- measured data

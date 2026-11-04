@@ -107,6 +107,8 @@ def _scenario_from_payload(payload: dict[str, Any]) -> TrainingScenario:
         lora_dropout=float(lora_raw.get("dropout", 0.05)),
         lora_target_modules=list(lora_raw.get("target_modules") or []),
         lora_train_embeddings=bool(lora_raw.get("train_embeddings", False)),
+        lora_ds_config=str(payload.get("lora_ds_config") or "z3"),
+        lora_liger=int(payload.get("lora_liger", 1)),
         dpo_beta=float(dpo_raw.get("beta", 0.1)),
         dpo_preference_batch=int(dpo_raw.get("preference_batch", 1)),
         grpo_group_size=int(grpo_raw.get("group_size", 8)),

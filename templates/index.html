@@ -118,9 +118,26 @@
       <div class="derived" id="derived-box"></div>
     </section>
 
-    <!-- ⑤ 数据量与训练规模 -->
+    <!-- ⑤ LoRA 参数 -->
+    <section class="block" id="lora-block" hidden>
+      <h2 class="block__title"><span class="idx">5</span>LoRA 参数</h2>
+      <div class="grid grid--two" id="lora-grid"></div>
+      <div class="field">
+        <label class="field__label" for="lora-target">适配目标模块</label>
+        <select id="lora-target" class="input input--select">
+          <option value="all">全部线性层（q/k/v/o + MLP）</option>
+          <option value="attn_only">仅注意力层（q/k/v/o）</option>
+        </select>
+      </div>
+      <div class="notice notice--info">
+        吞吐与显存系数由本机实测基准库（BW1000 真机 LoRA 记录）拟合得出，
+        结果附置信度与实测来源；实测覆盖的模型在页面上会标注。
+      </div>
+    </section>
+
+    <!-- ⑥ 数据量与训练规模 -->
     <section class="block">
-      <h2 class="block__title"><span class="idx">5</span>数据量与训练规模</h2>
+      <h2 class="block__title"><span class="idx">6</span>数据量与训练规模</h2>
       <div class="grid grid--two" id="data-grid"></div>
       <p class="hint">用于换算训练步数与预计总时长。至少填写其中一项，否则无法给出总时长估算。</p>
       <div id="data-derived" class="derived"></div>

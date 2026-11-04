@@ -61,8 +61,8 @@ const FIXTURES = {
         kernel_note: '预训练与「全参数 SFT」当前共用同一套计算内核，资源估算数值一致。' },
       { mode: 'sft_full', label: '全参 SFT', modelled: true, summary: '全参数更新',
         kernel_note: '预训练与「全参数 SFT」当前共用同一套计算内核，资源估算数值一致。' },
-      { mode: 'sft_lora', label: 'LoRA SFT', modelled: false, summary: '低秩适配',
-        unmodelled_reason: 'LoRA 的优化器状态与梯度规模与全参训练不同，尚无独立资源模型，不提供估算。' },
+      { mode: 'sft_lora', label: 'LoRA SFT', modelled: true, summary: '低秩适配',
+        kernel_note: 'LoRA 使用独立的资源模型，系数由实测基准库拟合得出。' },
       { mode: 'dpo', label: 'DPO', modelled: false, summary: '偏好对齐',
         unmodelled_reason: 'DPO 需要同时前向参考模型，显存与吞吐模型尚未建立，不提供估算。' },
       { mode: 'grpo', label: 'GRPO', modelled: false, summary: '强化学习',
@@ -74,6 +74,7 @@ const FIXTURES = {
   '/api/v1/training/search': {
     ok: true,
     elapsed_ms: 1234.5,
+    action: 'full',
     mode: 'sft_full',
     mode_kernel_note: '预训练与「全参数 SFT」当前共用同一套计算内核，资源估算数值一致。',
     measured: { available: true, matched: true, slug: 'qwen3-5-2b',
@@ -240,15 +241,21 @@ async function main() {
     ['LoRA SFT', 'DPO', 'GRPO', 'PPO'].every(l => labels.includes(l)),
     labels.join(', '));
   const badged = modeButtons.filter(b => b.querySelector('.badge'));
-  check('4 个未建模类型打了标记', badged.length === 4, String(badged.length));
+  // LoRA is now modelled (own resource model); DPO / GRPO / PPO are not.
+  check('3 个未建模类型打了标记', badged.length === 3, String(badged.length));
+  const unmodelledLabels = badged.map(b => b.textContent.replace(/未建模/, '').trim());
+  check('未建模的是 DPO/GRPO/PPO',
+    unmodelledLabels.every(l => ['DPO', 'GRPO', 'PPO'].includes(l)),
+    unmodelledLabels.join(', '));
 
   console.log('\n=== ② 未建模模式给出原因 ===');
-  const loraBtn = modeButtons.find(b => b.textContent.includes('LoRA'));
-  loraBtn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  const dpoBtn = modeButtons.find(b => b.textContent.includes('DPO'));
+  dpoBtn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
   await new Promise(r => setTimeout(r, 50));
   const warn = doc.querySelector('#mode-warning');
   check('警告区可见', warn && !warn.hidden);
-  check('警告文案说明了原因', warn && warn.textContent.includes('资源模型'),
+  check('警告文案说明了原因',
+    warn && (warn.textContent.includes('资源模型') || warn.textContent.includes('模型尚未建立')),
     warn ? warn.textContent.slice(0, 60) : '');
 
   console.log('\n=== ③ 数据量字段存在 ===');
@@ -407,6 +414,23 @@ async function main() {
   check('标注区存在', !!modeNote);
   // The default mode after init is sft_full, which carries a note.
   check('已建模模式显示标注', modeNote && !modeNote.hidden);
+  // The LoRA mode must carry its own note; switching to it shows it.
+  const loraModeBtn2 = [...doc.querySelectorAll('#task-grid .task-btn')]
+    .find(b => b.textContent.includes('LoRA'));
+  if (loraModeBtn2) {
+    loraModeBtn2.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    await new Promise(r => setTimeout(r, 60));
+    check('LoRA 模式显示独立说明',
+      modeNote && !modeNote.hidden && modeNote.textContent.includes('独立'),
+      modeNote ? modeNote.textContent.slice(0, 40) : '');
+  }
+  // The default mode is full SFT, which shares the kernel with pretraining.
+  const sftModeBtn = [...doc.querySelectorAll('#task-grid .task-btn')]
+    .find(b => b.textContent.includes('全参'));
+  if (sftModeBtn) {
+    sftModeBtn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    await new Promise(r => setTimeout(r, 60));
+  }
   check('标注说明了共用内核',
     modeNote && modeNote.textContent.includes('共用同一套计算内核'),
     modeNote ? modeNote.textContent.slice(0, 40) : '');
@@ -472,6 +496,47 @@ async function main() {
   check('有实测记录明细表',
     measuredBox.querySelectorAll('details tbody tr').length === 2,
     String(measuredBox.querySelectorAll('details tbody tr').length));
+
+  console.log('\n=== ⑱ LoRA 参数表单 ===');
+  const loraModeBtn = [...doc.querySelectorAll('#task-grid .task-btn')]
+    .find(b => b.textContent.includes('LoRA'));
+  check('有 LoRA 模式按钮', !!loraModeBtn);
+
+  const loraBlock = doc.querySelector('#lora-block');
+  check('LoRA 参数区块存在', !!loraBlock);
+  check('非 LoRA 模式时隐藏', loraBlock && loraBlock.hidden);
+
+  if (loraModeBtn) {
+    loraModeBtn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    await new Promise(r => setTimeout(r, 80));
+    check('切到 LoRA 后显示参数区', loraBlock && !loraBlock.hidden);
+    check('有 rank 输入', !!doc.getElementById('lora-lora_r'));
+    check('有 alpha 输入', !!doc.getElementById('lora-lora_alpha'));
+    check('有 dropout 输入', !!doc.getElementById('lora-lora_dropout'));
+    check('有目标模块选择', !!doc.getElementById('lora-target'));
+    check('有 DeepSpeed 阶段选择', !!doc.getElementById('lora-ds'));
+    check('有 Liger 开关', !!doc.getElementById('lora-liger'));
+    check('默认 rank 为 8', doc.getElementById('lora-lora_r').value === '8',
+      doc.getElementById('lora-lora_r').value);
+    check('默认 ZeRO-3', doc.getElementById('lora-ds').value === 'z3',
+      doc.getElementById('lora-ds').value);
+
+    // The request must carry the LoRA parameters.
+    doc.getElementById('lora-lora_r').value = '16';
+    doc.getElementById('btn-solve')
+      .dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    await new Promise(r => setTimeout(r, 300));
+    const loraReq = requests.filter(r => r.path === '/api/v1/training/search').pop();
+    check('请求带上 LoRA 参数', !!loraReq && !!loraReq.body.lora);
+    if (loraReq && loraReq.body.lora) {
+      check('rank 传入请求', loraReq.body.lora.r === 16, String(loraReq.body.lora.r));
+      check('目标模块传入请求', 'target_modules' in loraReq.body.lora);
+    }
+    check('请求带上 ZeRO 阶段', !!loraReq && !!loraReq.body.lora_ds_config,
+      loraReq ? String(loraReq.body.lora_ds_config) : '');
+    check('请求带上 Liger 开关', !!loraReq && loraReq.body.lora_liger !== undefined,
+      loraReq ? String(loraReq.body.lora_liger) : '');
+  }
 
   console.log('\n' + '='.repeat(46));
   if (failures.length) {

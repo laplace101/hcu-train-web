@@ -31,6 +31,7 @@ from estimators.adapter import UnsupportedModeError
 from engine import config_builder
 from repositories import measured as measured_repo
 from repositories.hardware import HARDWARE_PROFILES, resolve_hardware
+from services import lora_calibration, lora_model
 from services.validation import has_errors, validate_scenario
 
 APP_ROOT = Path(__file__).resolve().parents[1]
@@ -411,7 +412,14 @@ def _catalog_slug_by_name(name: str | None) -> str | None:
     """
     if not name:
         return None
-    target = name.strip().lower()
+    raw = str(name)
+    if "/" in raw and raw.endswith(".json"):
+        parts = raw.replace("\\", "/").split("/")
+        if "models" in parts:
+            index = parts.index("models")
+            if index + 1 < len(parts):
+                return parts[index + 1]
+    target = raw.strip().lower()
     flat = target.replace("-", "").replace(".", "").replace("_", "").replace("/", "")
 
     catalog_file = APP_ROOT / "catalog" / "catalog.json"
@@ -519,6 +527,97 @@ def measured_for_legacy(
     }
 
 
+def _estimate_lora(scenario: TrainingScenario, spec: Any) -> dict[str, Any]:
+    """Estimate a LoRA fine-tuning run.
+
+    LoRA has its own resource model (see `services/lora_model.py`), not the
+    full-parameter kernel: the base is frozen, so there are no base
+    gradients or base optimiser states, while the backward pass still
+    traverses the base.
+    """
+    started = time.time()
+    hardware = resolve_hardware(scenario.hardware_id)
+    if hardware is None:
+        raise ScenarioRejected(f"未知硬件型号：{scenario.hardware_id}")
+
+    slug = scenario.model_slug
+    if not slug:
+        slug = _catalog_slug_by_name(scenario.model_config_path)
+    if not slug:
+        raise ScenarioRejected(
+            "LoRA 估算需要模型目录中的预设模型",
+            [{
+                "field": "model_slug",
+                "severity": "error",
+                "message": "未能确定模型标识",
+                "suggestion": "请选择目录中的预设模型（LoRA 系数按模型实测拟合）",
+            }],
+        )
+
+    calibration = lora_calibration.build_calibration()
+    try:
+        plans = lora_model.three_plans(
+            slug=slug,
+            seq_length=scenario.parallel.seq_length,
+            lora_rank=scenario.lora_r,
+            lora_alpha=scenario.lora_alpha,
+            lora_target="all" if not scenario.lora_target_modules else "attn_only",
+            ds_config=scenario.lora_ds_config,
+            liger=scenario.lora_liger,
+            calibration=calibration,
+        )
+    except lora_model.LoraNotSupported as exc:
+        raise ScenarioRejected(str(exc), exc.details)
+
+    measured = measured_comparison(scenario, {}, plans, hardware)
+
+    # The "current configuration" view: estimate the scenario's own card and
+    # batch count rather than a searched plan.
+    current = None
+    try:
+        current = lora_model.estimate_lora(
+            slug=slug,
+            num_gpus=scenario.num_gpus,
+            micro_batch_size=scenario.parallel.micro_batch_size,
+            seq_length=scenario.parallel.seq_length,
+            lora_rank=scenario.lora_r,
+            lora_alpha=scenario.lora_alpha,
+            lora_target="all" if not scenario.lora_target_modules else "attn_only",
+            ds_config=scenario.lora_ds_config,
+            liger=scenario.lora_liger,
+            calibration=calibration,
+        )
+    except lora_model.LoraNotSupported:
+        current = None
+
+    return {
+        "ok": True,
+        "action": "lora",
+        "mode": scenario.mode.value,
+        "mode_label": spec.label,
+        "mode_kernel_note": spec.kernel_note,
+        "hardware": hardware.to_dict(),
+        "measured": measured,
+        "plans": {
+            "current": current,
+            "minimum": plans["minimum"],
+            "stable": plans["stable"],
+            "performance": plans["performance"],
+            "_meta": {
+                "stable_label": "推荐稳定方案",
+                "stable_reasons": [],
+                "evaluations": plans["evaluations"],
+                "hbm_gib": plans["hbm_gib"],
+                "margin_gib": plans["margin_gib"],
+            },
+        },
+        "issues": [],
+        "calibration": lora_calibration.summary(calibration),
+        "simulator_version": f"lora-calibration@{calibration.get('generated_at')}",
+        "elapsed_ms": round((time.time() - started) * 1000, 1),
+    }
+
+
 def estimate(
     scenario: TrainingScenario,
     *,
@@ -536,6 +635,9 @@ def estimate(
     spec = MODE_SPECS[scenario.mode]
     if not spec.modelled:
         raise UnsupportedModeError(spec.unmodelled_reason)
+
+    if scenario.mode is TrainingMode.SFT_LORA:
+        return _estimate_lora(scenario, spec)
 
     hardware = resolve_hardware(scenario.hardware_id)
     if hardware is None:

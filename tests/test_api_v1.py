@@ -44,7 +44,11 @@ def main() -> int:
     check("模拟器可用", body["simulator"]["available"] is True, body["simulator"]["version"])
     check("六种训练类型", len(body["modes"]) == 6, str(len(body["modes"])))
     modelled = [m["mode"] for m in body["modes"] if m["modelled"]]
-    check("仅全参/预训练已建模", set(modelled) == {"pretrain", "sft_full"}, str(modelled))
+    check("已建模：预训练/全参/LoRA", set(modelled) == {"pretrain", "sft_full", "sft_lora"},
+          str(modelled))
+    unmodelled = {m["mode"] for m in body["modes"] if not m["modelled"]}
+    check("未建模：DPO/GRPO/PPO", unmodelled == {"dpo", "grpo", "ppo"},
+          str(sorted(unmodelled)))
     check("硬件目录含 BW1000", any(h["id"] == "bw1000" and h["supported"] for h in body["hardware"]))
     check("未支持卡带原因", all(
         h["unsupported_reason"] for h in body["hardware"] if not h["supported"]
@@ -99,13 +103,19 @@ def main() -> int:
           "; ".join(i["message"] for i in issues if i["severity"] == "error")[:100])
 
     print("\n=== ③ 未建模模式明确拒绝（规划书 §1.3）===")
-    for mode in ("sft_lora", "dpo", "grpo", "ppo"):
+    # LoRA has its own resource model now, so it is estimated rather than
+    # refused; the RL modes still have no kernel.
+    for mode in ("dpo", "grpo", "ppo"):
         status, body = post("/api/v1/training/search", dict(base, mode=mode))
         err = (body or {}).get("error") or {}
         check(f"{mode} 返回 422 且说明原因",
               status == 422 and err.get("code") == "mode_not_modelled"
               and len(err.get("message", "")) > 20,
               err.get("message", "")[:70])
+
+    status, body = post("/api/v1/training/search", dict(base, mode="sft_lora"))
+    check("LoRA 不再被拒绝", status == 200 and (body or {}).get("ok") is True,
+          f"HTTP {status}")
 
     print("\n=== ④ 不支持的硬件拒绝 ===")
     status, body = post("/api/v1/training/search", dict(base, hardware_id="bw1100"))

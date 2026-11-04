@@ -47,7 +47,13 @@ COLUMNS = [
 ]
 
 
+#: Set by tests and by deployments that point at their own copy.
+PATH_OVERRIDE: Path | None = None
+
+
 def database_path() -> Path | None:
+    if PATH_OVERRIDE is not None and PATH_OVERRIDE.exists():
+        return PATH_OVERRIDE
     for candidate in DEFAULT_DB_PATHS:
         if candidate and candidate.exists():
             return candidate
@@ -67,7 +73,7 @@ def _connect() -> sqlite3.Connection:
     """
     path = database_path()
     if path is None:
-        raise FileNotFoundError("未找到实测数据�� bench.db")
+        raise FileNotFoundError("未找到实测数据库 bench.db")
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     return conn

@@ -15,23 +15,34 @@ cd "$ROOT"
 PY="${PYTHON:-/root/.local/share/uv/python/cpython-3.14.7-linux-x86_64-gnu/bin/python3.14}"
 FAILED=0
 
+# The exit status must be the script's own, not the last command in a pipe:
+# a test that crashes after printing PASS must still fail the run.
 run() {
   local label="$1"; shift
   echo ""
   echo "──────────────────────────────────────────────"
   echo "▶ $label"
   echo "──────────────────────────────────────────────"
-  if "$@"; then
+  local log
+  log="$(mktemp)"
+  if "$@" > "$log" 2>&1; then
+    cat "$log"
     echo "✔ $label 通过"
   else
-    echo "✘ $label 失败"
+    local rc=$?
+    cat "$log"
+    echo "✘ $label 失败 (退出码 $rc)"
     FAILED=1
   fi
+  rm -f "$log"
 }
 
 run "API v1 分层接口"    "$PY" tests/test_api_v1.py
 run "镜像与启动命令"      "$PY" tests/test_launch.py
 run "实测数据接入"        "$PY" tests/test_measured.py
+run "LoRA 资源模型"       "$PY" tests/test_lora_model.py
+run "LoRA 接口"           "$PY" tests/test_lora_api.py
+run "校准自动重建"       "$PY" tests/test_calibration_refresh.py
 
 if command -v node >/dev/null 2>&1 && [ -d node_modules/jsdom ]; then
   run "前端 DOM 流程"     node tests/frontend_test.js

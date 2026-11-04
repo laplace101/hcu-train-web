@@ -79,7 +79,11 @@ hcu-train-web/
 ├── repositories/
 │   ├── hardware.py             硬件目录与可估算性判定
 │   ├── images.py               训练镜像目录 + 提取码哈希存储
-│   └── templates.py            训练配置模板
+│   ├── templates.py            训练配置模板
+│   └── measured.py             实测基准库（只读）
+├── services/
+│   ├── lora_model.py           LoRA 资源模型（解析部分）
+│   └── lora_calibration.py     LoRA 系数校准（从实测拟合）
 ├── domain/scenarios.py         领域模型：六种训练模式、场景、并行方案
 ├── engine/                     已验证的估算内核（35/35 基线依赖，不要改）
 ├── catalog/                    35 个预设模型的 config.json（随仓库保存，离线可用）
@@ -107,12 +111,32 @@ hcu-train-web/
 |---------|------|------|
 | **预训练** | 可估算 | 与全参 SFT 共用同一计算内核 |
 | **全参数 SFT** | 可估算 | 同上 |
-| LoRA-SFT | 未建模 | 冻结基座不产生基座梯度与优化器状态，但反向仍需经过基座，激活与反向计算不能按可训练参数比例缩减 |
+| **LoRA-SFT** | 可估算 | 独立资源模型，系数由本机实测基准库拟合 |
 | DPO | 未建模 | 需要策略 / 参考双模型的显存与偏好对计算模型 |
 | GRPO | 未建模 | 缺少 rollout 生成、规则/奖励模型与组内相对优势计算 |
 | PPO | 未建模 | 需要 Actor/Critic 双向更新、GAE 优势估计与分阶段角色放置的峰值显存模型 |
 
 **未建模的类型会明确拒绝并给出原因，不会套用全参训练的数字。**
+
+### LoRA 资源模型
+
+LoRA 不套用全参训练的数字，而是有自己的资源模型：
+
+- **解析部分**（`services/lora_model.py`）：基座冻结后没有基座梯度、没有基座优化器状态，
+  但反向仍需穿过基座，所以激活与反向计算不能按可训练参数比例缩减。
+  适配器自身的参数、梯度与优化器状态按 `r × (in + out)` 计算。
+- **校准部分**（`services/lora_calibration.py`）：吞吐按
+  `step_time = fixed + per_sample × micro_batch` 从实测拟合，
+  显存按同组实测点插值。
+
+结果带完整来源标注：置信度等级（多样本拟合 / 单样本低置信 / 跨模型外推）、
+拟合样本数、拟合误差、显存来源（实测插值 / 实测外推 / 解析基线）。
+
+**实测库是只读的**（`mode=ro` 由 SQLite 强制拒绝写入），校准以数据库文件与
+WAL sidecar 的大小和修改时间为指纹，新数据入库后自动重建。
+
+当前实测覆盖：6 个模型 × {none, z3} × {liger 开/关}，bs 1–32，seq 2048/4096，
+均为 BW1000 真机 LLaMA-Factory + DeepSpeed 记录。
 
 ### 预训练与全参 SFT 的差异（如实说明）
 
@@ -186,6 +210,9 @@ python tests/test_launch.py        # 镜像与启动命令
 node tests/frontend_test.js        # 前端 DOM 流程
 python tests/test_e2e_live.py http://127.0.0.1:7801   # 实时端到端
 python tests/test_task_difference.py                 # 预训练 vs SFT 实测差异
+python tests/test_lora_model.py                      # LoRA 模型精度
+python tests/test_lora_api.py                        # LoRA 接口
+python tests/test_calibration_refresh.py             # 校准随数据库更新重建
 ```
 
 ---
