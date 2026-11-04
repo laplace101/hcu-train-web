@@ -29,6 +29,17 @@ def check(name: str, condition: bool, detail: str = "") -> None:
         failures.append(name)
 
 
+def _has_preset(slug: str) -> bool:
+    """Whether the catalogue holds a preset with this slug."""
+    import json
+
+    path = PROJECT_ROOT / "catalog" / "catalog.json"
+    if not path.exists():
+        return False
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return any(m.get("slug") == slug for m in data.get("models", []))
+
+
 def main() -> int:
     client = app.test_client()
 
@@ -72,12 +83,14 @@ def main() -> int:
     check("矩阵与直接判定一致", not mismatched, ", ".join(mismatched[:3]))
 
     print("\n=== ③ 已知模型的判定 ===")
+    # The family adapters own the hybrid-attention and DSA series; the
+    # kernel's own adapters keep the models it already handles exactly.
     expectations = [
         ("qwen3-8b", "estimable", "qwen3"),
-        ("qwen3-5-2b", "estimable", "qwen3_5"),
+        ("qwen3-5-2b", "estimable", "qwen_hybrid"),
         ("qwen3-vl-8b-instruct", "estimable", "qwen3_vl"),
         ("deepseek-v3", "estimable", "deepseek_v3"),
-        ("glm-5", "estimable", "glm5"),
+        ("glm-5", "estimable", "glm_family"),
         ("qwen2-5-7b", "approximate", "generic_gpt"),
     ]
     for slug, status, adapter in expectations:
@@ -88,11 +101,24 @@ def main() -> int:
               f"实际 {support.adapter}")
 
     print("\n=== ④ 不可估算的模型给出原因 ===")
-    # DeepSeek-V3.2 has DSA index attention; only the glm5 adapter applies it.
-    v32 = support_matrix.check_reference("deepseek-v3-2-exp")
-    check("V3.2 判为不可估算", v32.status == "not_estimable", v32.status)
-    check("列出原因", len(v32.reasons) > 0, v32.reasons[0][:60] if v32.reasons else "")
-    check("给出建议", len(v32.suggestions) > 0)
+    # A model the kernel genuinely cannot represent. MiniMax's Lightning
+    # hybrid attention has no kernel field, so the estimate stays refused
+    # even though its expert count is now normalised.
+    minimax = support_matrix.check_reference(
+        "minimax-m2") if _has_preset("minimax-m2") else None
+    if minimax is not None:
+        check("MiniMax 判为不可估算", minimax.status == "not_estimable",
+              minimax.status)
+        check("列出原因", len(minimax.reasons) > 0,
+              minimax.reasons[0][:60] if minimax.reasons else "")
+        check("给出建议", len(minimax.suggestions) > 0)
+    else:
+        # No MiniMax preset in the catalogue — check a model that does not
+        # exist, which must still be refused with a reason.
+        unknown = support_matrix.check_reference("no-such-model")
+        check("未知模型判为不可估算", unknown.status == "not_estimable",
+              unknown.status)
+        check("列出原因", len(unknown.reasons) > 0)
 
     print("\n=== ⑤ 单模型查询端点 ===")
     r = client.post("/api/v1/model-support/check", json={"reference": "qwen3-8b"})
@@ -111,12 +137,19 @@ def main() -> int:
     r = client.get("/api/v1/model-support/adapters")
     adapters = (r.get_json() or {}).get("adapters") or {}
     check("HTTP 200", r.status_code == 200)
-    check("列出 6 个适配器", len(adapters) == 6, str(len(adapters)))
+    # Six from the kernel plus the four family modules this project adds.
+    check("列出 10 个适配器", len(adapters) == 10, str(len(adapters)))
     check("glm5 支持 DSA", adapters["glm5"]["supports_dsa"] is True)
     check("qwen3_vl 支持视觉", adapters["qwen3_vl"]["supports_vision"] is True)
     check("generic 是兜底", adapters["generic_gpt"]["is_fallback"] is True)
     check("每个适配器都说明读哪些字段",
           all(adapters[a]["reads"] for a in adapters))
+    check("标出家族模块",
+          adapters["qwen_hybrid"]["is_family_module"] is True)
+    check("家族混合注意力适配器支持视觉",
+          adapters["qwen_hybrid"]["supports_vision"] is True)
+    check("家族 DeepSeek 适配器支持 DSA",
+          adapters["deepseek_family"]["supports_dsa"] is True)
 
     print("\n=== ⑨ 上游对照 ===")
     # The upstream simulator ships the same six adapters, so the limit is

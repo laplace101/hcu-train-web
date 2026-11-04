@@ -42,6 +42,12 @@ const FIXTURES = {
       { name: 'glm5', description: 'GLM-5，DSA 索引注意力' },
       { name: 'generic_gpt', description: '通用稠密解码器兜底' },
     ],
+    family_modules: [
+      { adapter: 'qwen_hybrid', covers: 'Qwen3.5 / Qwen3-Next 系列',
+        capability: '混合注意力（线性注意力层 + 全注意力层）' },
+      { adapter: 'deepseek_family', covers: 'DeepSeek V2 / V3 / R1 系列',
+        capability: 'MLA 低秩 KV、MoE、MTP' },
+    ],
     upstream: {
       adapter_count: 6,
       adapters: ['qwen3', 'qwen3_vl', 'qwen3_5', 'deepseek_v3', 'glm5', 'generic_gpt'],
@@ -639,6 +645,11 @@ async function main() {
   check('说明两种行为的差别',
     supportSummary.textContent.includes('差别不在模型数量'),
     supportSummary.textContent.match(/差别不在[^\n]{0,30}/)?.[0] || '');
+  check('列出系列通用模块',
+    supportSummary.textContent.includes('系列通用模块'));
+  check('说明家族模块覆盖范围',
+    supportSummary.textContent.includes('Qwen3-Next'),
+    supportSummary.textContent.match(/Qwen3[^\n]{0,30}/)?.[0] || '');
   check('列出适配器', supportSummary.textContent.includes('qwen3'));
   check('显示可精确估算', supportBox.textContent.includes('可精确估算'));
   check('显示近似标注', supportBox.textContent.includes('可估算（近似值）'));

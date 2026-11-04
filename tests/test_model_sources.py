@@ -81,6 +81,11 @@ def main() -> int:
     verdict_dense = compatibility.check_compatibility(dense)
     check("稠密模型落到通用适配器", verdict_dense["adapter"] == "generic_gpt",
           str(verdict_dense["adapter"]))
+    # The MoE field normaliser must stay out of the running for a model
+    # whose fields the kernel already reads.
+    check("稠密模型不被 MoE 归一化接管",
+          verdict_dense["adapter"] != "moe_field_normalised",
+          str(verdict_dense["adapter"]))
     check("通用适配器仍可估算", verdict_dense["supported"] is True,
           str(verdict_dense["reasons"])[:80])
     check("标记为兜底适配器", verdict_dense["adapter_is_fallback"] is True)
@@ -92,9 +97,14 @@ def main() -> int:
                       "num_local_experts": 256, "num_experts_per_tok": 8,
                       "vocab_size": 200064}
     verdict_moe = compatibility.check_compatibility(moe_unreadable)
-    check("内核读不到的专家数被拦截", verdict_moe["supported"] is False)
-    check("说明会被当成稠密模型",
-          any("稠密" in r for r in verdict_moe["reasons"]),
+    # The normalising adapter fixes the field name, so the count becomes
+    # visible — but the model still carries structures the kernel cannot
+    # represent, so the estimate stays refused.
+    check("专家数被归一化接管",
+          verdict_moe["adapter"] == "moe_field_normalised",
+          str(verdict_moe["adapter"]))
+    check("归一化后不再因专家数被拒",
+          not any("稠密" in r for r in verdict_moe["reasons"]),
           verdict_moe["reasons"][0][:70] if verdict_moe["reasons"] else "")
 
     print("\n=== ③ 兼容性判定：未知模型类型 ===")
@@ -105,6 +115,9 @@ def main() -> int:
     verdict_unknown = compatibility.check_compatibility(unknown)
     check("未知模型类型落到通用适配器",
           verdict_unknown["adapter"] == "generic_gpt", str(verdict_unknown["adapter"]))
+    check("未知模型不被 MoE 归一化接管",
+          verdict_unknown["adapter"] != "moe_field_normalised",
+          str(verdict_unknown["adapter"]))
     check("标记为兜底适配器", verdict_unknown["adapter_is_fallback"] is True)
     check("普通稠密结构仍可估算", verdict_unknown["supported"] is True,
           str(verdict_unknown["reasons"])[:80])
@@ -115,7 +128,11 @@ def main() -> int:
                    "architectures": ["FooForCausalLM"],
                    "num_local_experts": 128, "num_experts_per_tok": 4}
     verdict_unknown_moe = compatibility.check_compatibility(unknown_moe)
-    check("未知模型的可读专家数仍被拦截", verdict_unknown_moe["supported"] is False)
+    check("未知模型的专家数由归一化适配器接管",
+          verdict_unknown_moe["adapter"] == "moe_field_normalised",
+          str(verdict_unknown_moe["adapter"]))
+    check("归一化适配器不宣称精确估算",
+          verdict_unknown_moe["adapter_is_specialised"] is False)
 
     print("\n=== ④ ModelScope 模型走仿真接口 ===")
     # A resolvable public repository. The network may be unavailable in some

@@ -45,6 +45,11 @@ ADAPTER_DESCRIPTIONS = {
     "deepseek_v3": "DeepSeek V2/V3，MLA 低秩 KV + MoE",
     "glm5": "GLM-5，DSA 索引注意力 + MoE",
     "generic_gpt": "通用稠密解码器兜底（标准注意力 + 标准 FFN）",
+    # The family adapters this project adds.
+    "qwen_hybrid": "Qwen 混合注意力系列（Qwen3.5 / Qwen3-Next），线性注意力与全注意力逐层交替",
+    "deepseek_family": "DeepSeek 系列（V2/V3/R1），MLA + MoE，DSA 稀疏注意力",
+    "glm_family": "GLM 系列（GLM-5），DSA 索引注意力 + MoE",
+    "moe_field_normalised": "MoE 字段别名归一：把专家数写在别名下的系列",
 }
 
 
@@ -201,6 +206,16 @@ UPSTREAM_BASELINE = {
 }
 
 
+def _family_modules() -> list[dict[str, Any]]:
+    """The family modules this project adds on top of the kernel."""
+    try:
+        from engine import families
+
+        return [dict(module) for module in families.FAMILY_MODULES]
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def upstream_baseline() -> dict[str, Any]:
     """The upstream simulator's own model coverage, for comparison."""
     return dict(UPSTREAM_BASELINE)
@@ -234,6 +249,7 @@ def matrix() -> dict[str, Any]:
             for name, description in ADAPTER_DESCRIPTIONS.items()
         ],
         "upstream": upstream_baseline(),
+        "family_modules": _family_modules(),
         "families": families,
         "models": rows,
         "totals": {
@@ -248,6 +264,22 @@ def matrix() -> dict[str, Any]:
 #: The config fields each adapter reads. Taken from the kernel's adapter
 #: sources, so the matrix states what the kernel actually consumes.
 ADAPTER_FIELDS: dict[str, set[str]] = {
+    "qwen_hybrid": {"layer_types", "full_attention_interval",
+                    "linear_conv_kernel_dim", "linear_key_head_dim",
+                    "linear_value_head_dim", "linear_num_key_heads",
+                    "linear_num_value_heads", "partial_rotary_factor",
+                    "num_experts", "num_experts_per_tok"},
+    "deepseek_family": {"kv_lora_rank", "qk_nope_head_dim", "qk_rope_head_dim",
+                        "q_lora_rank", "index_head_dim", "index_n_heads",
+                        "index_topk", "indexer_types", "moe_layer_freq",
+                        "first_k_dense_replace", "partial_rotary_factor",
+                        "n_routed_experts", "num_experts"},
+    "glm_family": {"index_head_dim", "index_n_heads", "index_topk",
+                   "indexer_types", "moe_layer_freq", "first_k_dense_replace",
+                   "n_routed_experts", "num_experts"},
+    "moe_field_normalised": {"num_experts", "n_routed_experts",
+                             "num_local_experts", "moe_intermediate_size",
+                             "num_experts_per_tok"},
     "qwen3": {"num_experts", "num_experts_per_tok", "num_shared_experts"},
     "qwen3_vl": {"hidden_size", "num_experts", "num_experts_per_tok",
                  "moe_layer_freq", "moe_dense_layer_indices"},
@@ -273,10 +305,11 @@ def adapter_capabilities() -> dict[str, Any]:
         name: {
             "description": description,
             "reads": sorted(ADAPTER_FIELDS.get(name, set())),
-            "supports_vision": name in {"qwen3_vl", "qwen3_5"},
-            "supports_dsa": name == "glm5",
-            "supports_mlp_attention": name == "qwen3_5",
+            "supports_vision": name in {"qwen3_vl", "qwen3_5", "qwen_hybrid"},
+            "supports_dsa": name in {"glm5", "deepseek_family", "glm_family"},
+            "supports_mlp_attention": name in {"qwen3_5", "qwen_hybrid"},
             "is_fallback": name in compatibility.FALLBACK_ADAPTERS,
+            "is_family_module": name in compatibility.FAMILY_ADAPTERS,
         }
         for name, description in ADAPTER_DESCRIPTIONS.items()
     }

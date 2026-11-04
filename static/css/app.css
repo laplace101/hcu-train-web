@@ -515,3 +515,25 @@ table.data .num { text-align: right; }
 .badge--ok { background: #dafbe1; color: #1a7f37; }
 .badge--warn { background: #fff8c5; color: #9a6700; }
 .badge--bad { background: #ffebe9; color: #cf222e; }
+
+.support-families {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border-left: 2px solid var(--accent, #0969da);
+  background: var(--bg-elev-2, #f6f8fa);
+}
+
+.support-families h4 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: var(--text-dim, #57606a);
+}
+
+.support-family {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px 0;
+}
+
+.support-family strong { font-size: 12px; }

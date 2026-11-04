@@ -14,7 +14,11 @@ from __future__ import annotations
 from typing import Any
 
 #: Adapters that can represent a vision tower.
-VISION_CAPABLE_ADAPTERS = {"qwen3_vl", "qwen3_5"}
+#:
+#: `qwen_hybrid` is one of this project's family adapters. It builds the
+#: vision spec from `models.common.qwen_vl.spec`, the same builder the
+#: kernel's `qwen3_5` adapter uses, so it handles the vision tower too.
+VISION_CAPABLE_ADAPTERS = {"qwen3_vl", "qwen3_5", "qwen_hybrid"}
 
 #: The kernel's fallback adapter. It models a plain transformer decoder, so a
 #: model that lands here is estimated with the generic formulas — correct for
@@ -24,11 +28,60 @@ FALLBACK_ADAPTERS = {"generic_gpt"}
 
 #: Adapters with a family-specific model spec. A model handled by one of
 #: these is estimated with that family's layout (MLA, DSA, fused kernels …).
-SPECIALISED_ADAPTERS = {"qwen3", "qwen3_vl", "qwen3_5", "deepseek_v3", "glm5"}
+#:
+#: The family adapters this project adds are listed here too: they apply
+#: the same kind of architecture-specific modelling as the kernel's own
+#: adapters, so an estimate from them is exact rather than approximate.
+SPECIALISED_ADAPTERS = {
+    "qwen3", "qwen3_vl", "qwen3_5", "deepseek_v3", "glm5",
+    "qwen_hybrid", "deepseek_family", "glm_family",
+}
 
 #: Adapters that expect Multi-Latent Attention. They read these three fields
 #: to decide whether the model uses MLA.
 MLA_FIELDS = ("kv_lora_rank", "qk_nope_head_dim", "qk_rope_head_dim")
+
+#: The family adapters this project adds on top of the kernel's own.
+#:
+#: They are registered with the kernel's registry, so the kernel resolves
+#: them by the same rules it uses for its built-ins. The compatibility
+#: check needs to know what they cover, or it would refuse models they
+#: handle — the DeepSeek family adapter, for instance, applies DSA sparse
+#: attention, which the kernel's `deepseek_v3` adapter does not.
+FAMILY_ADAPTERS = {
+    "qwen_hybrid": {
+        "family": "Qwen 混合注意力系列",
+        "covers": "qwen3_5 / qwen3_next / qwen3_5_next 系列",
+        "reads": {"full_attention_interval", "linear_conv_kernel_dim",
+                  "linear_key_head_dim", "linear_value_head_dim",
+                  "linear_num_key_heads", "linear_num_value_heads",
+                  "layer_types", "partial_rotary_factor"},
+        "dsa_capable": False,
+    },
+    "deepseek_family": {
+        "family": "DeepSeek 系列",
+        "covers": "deepseek v2 / v3 / r1 系列（含 DSA 稀疏注意力）",
+        "reads": {"kv_lora_rank", "qk_nope_head_dim", "qk_rope_head_dim",
+                  "q_lora_rank", "index_head_dim", "index_n_heads",
+                  "index_topk", "indexer_types", "moe_layer_freq",
+                  "first_k_dense_replace", "partial_rotary_factor"},
+        "dsa_capable": True,
+    },
+    "glm_family": {
+        "family": "GLM 系列",
+        "covers": "glm5 系列（DSA 索引注意力）",
+        "reads": {"index_head_dim", "index_n_heads", "index_topk",
+                  "indexer_types", "moe_layer_freq", "first_k_dense_replace"},
+        "dsa_capable": True,
+    },
+    "moe_field_normalised": {
+        "family": "MoE 字段别名归一",
+        "covers": "把专家数写在别名下的任意 MoE 系列",
+        "reads": {"num_experts", "n_routed_experts", "num_local_experts",
+                  "moe_intermediate_size", "num_experts_per_tok"},
+        "dsa_capable": False,
+    },
+}
 
 #: Config features the kernel does not model but that only affect the
 #: constants, not the attention layout. Worth reporting, not worth refusing:
@@ -60,7 +113,7 @@ UNKNOWN_ARCH_MARKERS = {
 }
 
 #: Adapters whose model spec includes the DSA index-attention layout.
-DSA_CAPABLE_ADAPTERS = {"glm5"}
+DSA_CAPABLE_ADAPTERS = {"glm5", "deepseek_family", "glm_family"}
 
 #: The config fields the kernel reads an expert count from. It takes the
 #: first of `num_experts` and `n_routed_experts`; a model that spells its
@@ -189,20 +242,31 @@ def check_compatibility(config: dict[str, Any]) -> dict[str, Any]:
                 )
 
     # An expert count the kernel cannot read makes the model look dense.
+    # The MoE field-normalising adapter handles the alias, so the question
+    # is whether *some* adapter in play will read it — not whether the
+    # kernel's own field list mentions it.
     if not any(text.get(f) for f in EXPERT_COUNT_FIELDS):
         expert_field = next(
             (f for f in UNREADABLE_EXPERT_FIELDS if text.get(f)), None
         )
         if expert_field:
-            reasons.append(
-                f"该模型的专家数写在 {expert_field}={text.get(expert_field)}，"
-                f"而内核只读 {' 或 '.join(EXPERT_COUNT_FIELDS)}，"
-                "会把它当成稠密模型计算，显存与算力会被大幅低估"
-            )
-            suggestions.append(
-                "内核缺少该架构的 MoE 建模，不提供估算；"
-                "如需评估，请等待内核支持该模型的适配器"
-            )
+            if adapter in FAMILY_ADAPTERS:
+                # The family adapter renames the field before the kernel
+                # reads it, so the count is visible.
+                warnings.append(
+                    f"该模型的专家数写在 {expert_field}={text.get(expert_field)}，"
+                    "由字段归一化适配器转换后内核可以读到"
+                )
+            else:
+                reasons.append(
+                    f"该模型的专家数写在 {expert_field}={text.get(expert_field)}，"
+                    f"而内核只读 {' 或 '.join(EXPERT_COUNT_FIELDS)}，"
+                    "会把它当成稠密模型计算，显存与算力会被大幅低估"
+                )
+                suggestions.append(
+                    "内核缺少该架构的 MoE 建模，不提供估算；"
+                    "如需评估，请等待内核支持该模型的适配器"
+                )
 
     # Structures the kernel has no config field for. These block the
     # estimate: the model is architecturally different from anything the
@@ -237,9 +301,13 @@ def check_compatibility(config: dict[str, Any]) -> dict[str, Any]:
     # Fields the kernel reads but the chosen adapter does not apply. These
     # do not block the estimate — the structure is approximated with the
     # adapter's own formulas — so they are reported as warnings.
+    family = FAMILY_ADAPTERS.get(adapter)
+    family_reads = family["reads"] if family else set()
     unapplied = sorted({
         field for field, readers in ADAPTER_READS_FIELDS.items()
-        if text.get(field) is not None and adapter not in readers
+        if text.get(field) is not None
+        and adapter not in readers
+        and field not in family_reads
     })
     if unapplied:
         warnings.append(
@@ -301,6 +369,14 @@ def _select_adapter(config: dict[str, Any]) -> str | None:
         # which made this fall back to the local approximation and report
         # the wrong adapter.
         paths.bootstrap()
+
+        # The family adapters have to be registered before the kernel
+        # resolves, or the check would name a different adapter than the
+        # one the estimate actually uses.
+        from engine import families
+
+        families.register_all()
+
         from hcu_train_simulator.models.registry import resolve_model_adapter
 
         adapter = resolve_model_adapter(config)

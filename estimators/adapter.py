@@ -71,9 +71,38 @@ sys.path.insert(0, os.environ["APP_ROOT"])
 from engine import engine  # noqa: E402
 
 
+def register_family_adapters():
+    """Register this project's family adapters with the kernel.
+
+    The kernel resolves adapters through its own registry, so the family
+    modules have to be registered before a config is resolved. They are
+    registered as ordinary kernel adapters — the kernel then picks them
+    by the same scoring rules it uses for its built-ins.
+    """
+    from engine import paths
+
+    # `paths.bootstrap()` imports the simulator package in the order the
+    # kernel requires. Importing `models.registry` directly triggers a
+    # circular import between the qwen3_5 and qwen_vl benchmark modules.
+    paths.bootstrap()
+
+    if os.environ.get("HCU_NO_FAMILY_ADAPTERS") == "1":
+        # Escape hatch: run with the kernel's built-in adapters only. Used
+        # to produce the "before" numbers when checking that a family
+        # module did not change the results for models the kernel already
+        # handles.
+        return []
+
+    from engine import families
+
+    return families.register_all()
+
+
 def main():
     config_path, mode = sys.argv[1], sys.argv[2]
     sys.path.insert(0, os.path.dirname(os.path.abspath(config_path)))
+
+    register_family_adapters()
 
     import yaml
     with open(config_path, "r", encoding="utf-8") as handle:

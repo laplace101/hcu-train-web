@@ -245,7 +245,64 @@ ModelScope 接入有白名单（`modelscope.cn` / `modelers.cn` 等）、SSRF �
 适配器决定用哪些。所以某个字段适配器不读，只意味着该结构按通用公式处理，
 不构成拒绝理由；只有内核根本没有对应字段的结构才会阻断。
 
-### 6.4 三类推荐方案
+### 6.4 系列通用模块
+
+支持范围不按"一个个模型"扩展，而是按**系列**做通用模块。每个模块覆盖一个
+系列的全体成员，从配置字段推导架构，因此系列里新出的型号无需再写代码。
+
+| 模块 | 覆盖 | 能力 |
+|---|---|---|
+| `qwen_hybrid` | Qwen3.5 / Qwen3-Next / Qwen3.5-Next 系列 | 混合注意力（线性注意力层与全注意力层逐层交替）、MTP、MoE、视觉塔 |
+| `deepseek_family` | DeepSeek V2 / V3 / R1 系列 | MLA 低秩 KV、MoE、MTP、DSA 稀疏注意力 |
+| `glm_family` | GLM-5 系列 | DSA 索引注意力、MoE、MTP |
+| `moe_field_normalised` | 把专家数写在别名下的任意 MoE 系列 | 专家数字段别名归一 |
+
+这些模块注册进内核自己的适配器注册表，所以**内核按同一套规则解析它们**——
+不存在第二套选择逻辑，`services/compatibility.py` 问内核"会用哪个适配器"
+得到的答案就是估算实际使用的那个。
+
+**两个实测例子。**
+
+Qwen3-Next 声明 `model_type: qwen3_next`，内核的 `qwen3` 适配器按前缀匹配到它，
+于是每一层都按标准注意力计算。但 Qwen3-Next 和 Qwen3.5 是同一类混合注意力架构
+（显式 `layer_types`，或 `full_attention_interval` + `linear_conv_kernel_dim`），
+交给 `qwen_hybrid` 后：
+
+    iteration  32946.56 ms → 38053.92 ms  （+15.5%）
+    TGS        3978.32 → 3444.38        （-13.4%）
+
+MiniMax 把专家数写在 `num_local_experts`，内核只读 `num_experts` /
+`n_routed_experts`，于是 256 专家的 MoE 被当成稠密解码器：
+
+    峰值显存    67.48 GiB → 1650.92 GiB  （24 倍）
+
+**准确性的保证方式。** 家族模块必须做到两件事，缺一不可：
+
+- **扩展**——覆盖内核原本会算错的模型；
+- **不扰动**——内核已经算对的模型，数字逐位不变。
+
+第二条由 `tests/test_family_adapters.py` 强制：同一份配置分别在内核启用与
+停用家族模块的情况下各跑一次，比较 `iteration_ms` / `peak_gib` / `tgs`。
+当前结果：
+
+    DeepSeek-V3      243440.4 ms   两种路径完全相同
+    GLM-5            230597.46 ms  两种路径完全相同
+    Qwen3.5-35B-A3B  34438.08 ms   两种路径完全相同
+    Qwen3-8B         41515.09 ms   两种路径完全相同
+    Qwen3-VL-8B      43245.11 ms   两种路径完全相同
+
+家族模块的构建方式是**复用内核的规格构造器**（`build_transformer_engine_model_spec`、
+`build_gated_delta_net_spec`、`build_dsa_attention_spec` 等），而不是重写一遍公式。
+所以数字是内核的数字，不是第二套实现算出来的。
+
+停用开关：`HCU_NO_FAMILY_ADAPTERS=1` 让估算只走内核原生适配器，便于对照。
+
+**仍然被拒绝的模型。** 字段归一化只解决"字段名不同"，
+不解决"架构不同"。MiniMax 归一化后仍被拒绝，因为它的 Lightning 混合注意力
+（`attn_type_list`）、MTP 头、sigmoid router 在内核里没有对应建模——
+归一化让专家数被读到，但注意力布局仍然算不对。
+
+### 6.5 三类推荐方案
 
 | 方案 | 目标 |
 |------|------|
@@ -256,7 +313,7 @@ ModelScope 接入有白名单（`modelscope.cn` / `modelers.cn` 等）、SSRF �
 三类方案由 simulator 的 `solve` 得出，最小卡数方案在显存受限时可能仍是同样的卡数
 （例如 Qwen3-8B 单卡 64 GiB 装不下 TP=1），页面会如实显示。
 
-### 6.5 训练镜像与启动配置
+### 6.6 训练镜像与启动配置
 
 - **镜像目录**：来自光合开发者社区 Harbor 仓库快照，16 个仓库 / 192 个训练相关 tag，
   标注框架、DTK / Python / OS 版本与 `docker pull` 命令
@@ -265,7 +322,7 @@ ModelScope 接入有白名单（`modelscope.cn` / `modelers.cn` 等）、SSRF �
   未在目标环境验证的模板在 YAML 头部和页面上都有明确警告
 - **导出**：YAML 训练配置、Shell 启动脚本、Docker 命令、分布式环境变量、Rendezvous 命令
 
-### 6.6 参数校验
+### 6.7 参数校验
 
 并行整除性（`num_gpus % (tp*cp*pp)`、KV 头数、层数、MoE expert placement）、
 Batch 关系（`GBS = MBS × DP × 梯度累积`）、数据量与步数换算、检查点设置。
@@ -299,6 +356,7 @@ python tests/test_calibration_refresh.py             # 校准随数据库更新�
 python tests/test_model_sources.py                   # 模型来源与兼容性门禁
 python tests/test_adapter_agreement.py               # 适配器选择与内核一致
 python tests/test_support_matrix.py                  # 模型支持矩阵
+python tests/test_family_adapters.py                 # 系列通用模块与准确性
 python tools/probe_model_support.py                  # 批量探测各系列模型
 ```
 

@@ -1280,6 +1280,20 @@ function renderSupportSummary(data) {
   });
   box.appendChild(row);
 
+  // The family modules this project adds on top of the kernel.
+  if (Array.isArray(data.family_modules) && data.family_modules.length) {
+    const list = el('div', { class: 'support-families' });
+    list.appendChild(el('h4', {}, '系列通用模块'));
+    data.family_modules.forEach(module => {
+      list.appendChild(el('div', { class: 'support-family' }, [
+        el('strong', {}, module.adapter),
+        el('span', { class: 'hint' }, module.covers || ''),
+        el('span', { class: 'hint' }, module.capability || ''),
+      ]));
+    });
+    box.appendChild(list);
+  }
+
   // The adapter table explains what each adapter can represent.
   if (Array.isArray(data.adapters) && data.adapters.length) {
     const list = el('div', { class: 'support-adapters' });
