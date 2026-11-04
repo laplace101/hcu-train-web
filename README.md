@@ -83,7 +83,11 @@ hcu-train-web/
 │   └── measured.py             实测基准库（只读）
 ├── services/
 │   ├── lora_model.py           LoRA 资源模型（解析部分）
-│   └── lora_calibration.py     LoRA 系数校准（从实测拟合）
+│   ├── lora_calibration.py     LoRA 系数校准（从实测拟合）
+│   ├── measured_compare.py     实测对照层（与训练模式无关）
+│   ├── compatibility.py        模型兼容性门禁（问内核会用哪个适配器）
+│   └── support_matrix.py       模型支持矩阵
+├── engine/families/            系列通用模块（注册进内核适配器注册表）
 ├── domain/scenarios.py         领域模型：六种训练模式、场景、并行方案
 ├── engine/                     已验证的估算内核（35/35 基线依赖，不要改）
 ├── catalog/                    35 个预设模型的 config.json（随仓库保存，离线可用）
@@ -142,6 +146,33 @@ WAL sidecar 的大小和修改时间为指纹，新数据入库后自动重建�
 
 当前实测覆盖：6 个模型 × {none, z3} × {liger 开/关}，bs 1–32，seq 2048/4096，
 均为 BW1000 真机 LLaMA-Factory + DeepSpeed 记录。
+
+### 实测对照层（与训练模式无关）
+
+`services/measured_compare.py` 负责"把估算和实测放在一起对照"这件事，
+**不绑定任何训练模式**。全参微调、LoRA、RL 都走同一层，因此后续上传不同
+模式的实测数据时不需要改代码。
+
+它做三件事：
+
+1. **找到对应记录**——按卡数、序列长度、micro batch 匹配。完全一致记为
+   `exact`，否则取最接近的一条记为 `nearest`，并列出**具体差在哪**
+   （"序列长度 2048 ≠ 估算的 4096"），不让调用方把近似对照当成精确对照。
+2. **判断口径是否可比**——从记录本身读 `finetuning_type` 与 `lora_rank`，
+   判断它是不是 LoRA 运行。当前实测库全是 LoRA，而估算来自全参内核，
+   两者不是同一口径（LoRA 冻结基座，没有基座梯度与优化器状态），所以
+   载荷会明确写明"偏差不代表估算的误差"，并给出 `comparable: false`。
+   将来上传全参实测记录后，同一条代码路径会自动判定为可比。
+3. **如实说明没有数据**——找不到可比记录时给出原因与下一步建议，
+   不编造数字。
+
+接口：
+
+    GET  /api/v1/measured/envelope   实测数据覆盖了哪些模型
+    GET  /api/v1/measured/compare    单次对照（mode-agnostic）
+
+`services/estimates.py` 的匹配逻辑改为委托这一层，所以 API 路由、旧接口、
+LoRA 路径选到的是同一条记录、给出同一个匹配质量。
 
 ### 预训练与全参 SFT 的差异（如实说明）
 

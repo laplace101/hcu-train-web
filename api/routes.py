@@ -37,6 +37,7 @@ from repositories.hardware import describe_hardware, describe_stacks, resolve_ha
 from services import compatibility
 from services import estimates as estimate_service
 from services import launcher
+from services import measured_compare
 from services import support_matrix
 from services.modelscope import (
     ModelSourceError,
@@ -467,6 +468,45 @@ def measured_rows():
     result = measured_repo.query_measured(
         slug=slug, model=model, gpu_count=gpu_count,
         status=status or None, limit=limit,
+    )
+    return jsonify({"ok": True, **result})
+
+
+@api.get("/measured/envelope")
+def measured_envelope():
+    """Which models and configurations the measured data covers.
+
+    A user can check this before running an estimate, so they know in
+    advance whether a comparison will be possible.
+    """
+    return jsonify({"ok": True, **measured_compare.envelope()})
+
+
+@api.get("/measured/compare")
+def measured_compare_route():
+    """Compare an estimate with the measured data.
+
+    Mode-agnostic: the same comparison serves full-parameter, LoRA and
+    RL estimates. The payload states whether the two are comparable.
+    """
+    body = request.get_json(silent=True) or {}
+    slug = body.get("slug") or body.get("model_slug")
+    if not slug:
+        return jsonify({"ok": False, "error": {
+            "code": "validation_failed",
+            "message": "需要提供 slug",
+            "details": ["缺少模型标识"],
+        }}), 400
+
+    estimate = body.get("estimate") or {}
+    result = measured_compare.compare(
+        estimate,
+        slug=slug,
+        gpu_count=body.get("gpu_count"),
+        seq_length=body.get("seq_length"),
+        micro_batch_size=body.get("micro_batch_size"),
+        mode=body.get("mode"),
+        measured_is_lora=bool(body.get("measured_is_lora")),
     )
     return jsonify({"ok": True, **result})
 

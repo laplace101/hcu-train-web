@@ -33,6 +33,7 @@ from repositories import measured as measured_repo
 from repositories.hardware import HARDWARE_PROFILES, resolve_hardware
 from services import compatibility
 from services import lora_calibration, lora_model
+from services import measured_compare
 from services.validation import has_errors, validate_scenario
 
 APP_ROOT = Path(__file__).resolve().parents[1]
@@ -258,6 +259,19 @@ def _measured_match_key(
     )
 
 
+def _row_is_lora(row: dict[str, Any]) -> bool:
+    """Whether a measured row is a LoRA run.
+
+    The database records the fine-tuning type, so the comparison does not
+    have to assume it. Rows written before the column was filled in carry
+    a LoRA rank instead.
+    """
+    finetuning = str(row.get("finetuning_type") or "").strip().lower()
+    if finetuning:
+        return finetuning in {"lora", "qlora"}
+    return row.get("lora_rank") is not None
+
+
 def measured_comparison(
     scenario: TrainingScenario,
     facts: dict[str, Any],
@@ -307,13 +321,23 @@ def measured_comparison(
     rows = summary["rows"]
     gpus = scenario.num_gpus
     seq = scenario.parallel.seq_length
-
-    same_gpus = [r for r in rows if r.get("gpu_count") == gpus]
-    same_seq = [r for r in (same_gpus or rows) if r.get("cutoff_len") == seq]
-    candidates = same_seq or same_gpus or rows
-
     mbs = scenario.parallel.micro_batch_size
-    best = sorted(candidates, key=lambda r: _measured_match_key(r, gpus, seq, mbs))[0]
+
+    # The row matching lives in the shared layer so the API route, the
+    # legacy route and the LoRA path all pick the same row and report the
+    # same match quality.
+    matched = measured_compare.find_measured(
+        slug=slug, gpu_count=gpus, seq_length=seq, micro_batch_size=mbs,
+        rows=rows,
+    )
+    if matched is None:
+        return {
+            "available": True,
+            "matched": False,
+            "slug": slug,
+            "reason": summary.get("reason") or "实测库中没有该模型的成功记录",
+        }
+    best = matched["row"]
 
     # Compare the estimate against the measurement.
     estimate_tgs = None
@@ -328,18 +352,33 @@ def measured_comparison(
     if estimate_tgs and measured_tgs:
         deviation = round((estimate_tgs - measured_tgs) / measured_tgs * 100, 1)
 
+    # Whether the measured row was a LoRA run is read from the row, not
+    # assumed. The database holds LoRA runs today, but full-parameter runs
+    # would be stored in the same table, and the comparison has to adapt
+    # without a code change.
+    measured_is_lora = _row_is_lora(best)
+
+    if measured_is_lora:
+        comparability_note = (
+            "实测数据为 LoRA 微调（基座冻结，无基座梯度与优化器状态），"
+            "估算为全参训练内核。吞吐量可作量级参照，显存不可直接对比——"
+            "LoRA 冻结基座后显存显著低于全参估算属预期现象。"
+        )
+    else:
+        comparability_note = (
+            "实测数据为全参训练，与这里的估算同口径，"
+            "偏差可直接用于校准估计器内核。"
+        )
+
     return {
         "available": True,
         "matched": True,
         "slug": slug,
         "model_names": summary.get("model_names"),
         "source": summary.get("source"),
-        "measured_is_lora": True,
-        "comparability_note": (
-            "实测数据为 LoRA 微调（基座冻结，无基座梯度与优化器状态），"
-            "估算为全参训练内核。吞吐量可作量级参照，显存不可直接对比——"
-            "LoRA 冻结基座后显存显著低于全参估算属预期现象。"
-        ),
+        "measured_is_lora": measured_is_lora,
+        "comparable": not measured_is_lora,
+        "comparability_note": comparability_note,
         "estimate_tgs": estimate_tgs,
         "measured_tgs": measured_tgs,
         "tgs_deviation_percent": deviation,
@@ -348,7 +387,8 @@ def measured_comparison(
             round(best["peak_mem_mib"] / 1024, 2) if best.get("peak_mem_mib") else None
         ),
         "best_match": best,
-        "match_quality": _match_quality(best, gpus, seq, mbs),
+        "match_quality": matched["match_quality"],
+        "match_differences": matched["differences"],
         "match_bs": best.get("bs"),
         "estimate_bs": mbs,
         "row_count": summary.get("count"),
