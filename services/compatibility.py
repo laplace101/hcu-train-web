@@ -30,6 +30,14 @@ SPECIALISED_ADAPTERS = {"qwen3", "qwen3_vl", "qwen3_5", "deepseek_v3", "glm5"}
 #: to decide whether the model uses MLA.
 MLA_FIELDS = ("kv_lora_rank", "qk_nope_head_dim", "qk_rope_head_dim")
 
+#: Config features the kernel does not model but that only affect the
+#: constants, not the attention layout. Worth reporting, not worth refusing:
+#: the estimate stays the right order of magnitude.
+UNMODELLED_BUT_HARMLESS = {
+    "sliding_window": "滑窗注意力（内核按全注意力计算）",
+    "rope_scaling": "RoPE 缩放（内核按默认 RoPE 计算）",
+}
+
 #: Structures the kernel has no config field for at all, keyed by the
 #: field that signals them. These are the real blockers: the model is
 #: architecturally different from anything the kernel describes.
@@ -213,10 +221,22 @@ def check_compatibility(config: dict[str, Any]) -> dict[str, Any]:
         )
         suggestions.append("内核尚未建模该架构特征，不提供估算")
 
+    # Features the kernel does not model, but which do not change the
+    # attention layout or the expert distribution. These are reported so
+    # the estimate is not mistaken for an exact one.
+    minor = sorted({
+        label for field, label in UNMODELLED_BUT_HARMLESS.items()
+        if text.get(field) is not None or config.get(field) is not None
+    })
+    if minor:
+        warnings.append(
+            f"该模型带有内核未建模的次要特性：{'、'.join(minor)}；"
+            "不影响注意力布局与专家分布，估算结果仍在同一量级"
+        )
+
     # Fields the kernel reads but the chosen adapter does not apply. These
     # do not block the estimate — the structure is approximated with the
     # adapter's own formulas — so they are reported as warnings.
-    warnings: list[str] = []
     unapplied = sorted({
         field for field, readers in ADAPTER_READS_FIELDS.items()
         if text.get(field) is not None and adapter not in readers

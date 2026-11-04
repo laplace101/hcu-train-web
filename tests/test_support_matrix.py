@@ -131,6 +131,27 @@ def main() -> int:
     check("DeepSeek-V3 无阻断原因", verdict["reasons"] == [],
           str(verdict["reasons"])[:70])
 
+    print("\n=== ⑧ 次要特性只提示不拦截 ===")
+    # Sliding-window attention is not modelled, but it does not change the
+    # attention layout, so the model stays estimable with a warning.
+    sliding = {"model_type": "gemma3_text", "architectures": ["Gemma3ForCausalLM"],
+               "num_hidden_layers": 48, "hidden_size": 3840,
+               "num_attention_heads": 16, "num_key_value_heads": 8,
+               "intermediate_size": 9216, "vocab_size": 262144,
+               "sliding_window": 1024}
+    verdict_sliding = compatibility.check_compatibility(sliding)
+    check("滑窗模型仍可估算", verdict_sliding["supported"] is True,
+          str(verdict_sliding["reasons"])[:70])
+    check("给出滑窗提示",
+          any("滑窗" in w for w in verdict_sliding["warnings"]),
+          str(verdict_sliding["warnings"])[:70])
+
+    # A vision tower is a real blocker, not a minor feature.
+    multimodal = dict(sliding)
+    multimodal["vision_config"] = {"hidden_size": 1152}
+    verdict_mm = compatibility.check_compatibility(multimodal)
+    check("多模态模型被拦截", verdict_mm["supported"] is False)
+
     print("\n" + "=" * 46)
     if failures:
         print(f"FAILED {len(failures)}: {', '.join(failures)}")
