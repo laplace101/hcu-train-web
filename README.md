@@ -184,7 +184,45 @@ ModelScope 接入有白名单（`modelscope.cn` / `modelers.cn` 等）、SSRF �
 
 界面在「参数校验」页逐条列出原因与可选做法，而不是给一句断言消息。
 
-### 6.3 三类推荐方案
+### 6.3 模型支持矩阵
+
+内核只有 6 个适配器，且有一个通用兜底适配器 `generic_gpt`——任何模型都会
+落到某个适配器上。所以失败从来不是"没有适配器"，而是"落到的适配器无法
+表示这个架构"。
+
+| 适配器 | 覆盖 |
+|---|---|
+| `qwen3` | Qwen3 稠密与 MoE（GQA） |
+| `qwen3_vl` | Qwen3-VL 多模态（视觉塔 + 文本解码器） |
+| `qwen3_5` | Qwen3.5 混合线性注意力（layer_types + MTP） |
+| `deepseek_v3` | DeepSeek V2/V3/R1（MLA 低秩 KV + MoE） |
+| `glm5` | GLM-5（DSA 索引注意力 + MoE） |
+| `generic_gpt` | 通用稠密解码器兜底（标准注意力 + 标准 FFN） |
+
+矩阵区分三种状态：
+
+- **可精确估算**——内核有该架构的专用适配器
+- **可估算（近似值）**——落到 `generic_gpt`。对普通稠密解码器成立；对注意力
+  或专家布局不同的模型只是量级参考
+- **不可估算**——内核无法表示，列出具体缺什么
+
+界面「参数校验 → 模型支持矩阵」按系列列出每个预设模型的状态、适配器和
+缺失项。接口：
+
+    GET  /api/v1/model-support              全量矩阵
+    POST /api/v1/model-support/check        单模型查询
+    GET  /api/v1/model-support/adapters     每个适配器读哪些配置字段
+
+**适配器选择由内核自己回答。** `services/compatibility.py` 调用内核的
+`resolve_model_adapter`，不复制它的匹配逻辑——复刻的版本错了两次（漏掉兜底
+适配器、把 `glm4_moe` 误配成 `glm5`）。`tests/test_adapter_agreement.py` 把
+"预测的适配器"和"内核实际使用的适配器"逐个对比，8 个模型全部一致。
+
+**阻断与提示是分开的。** 内核在 `config/models.py` 统一读取配置字段，再由
+适配器决定用哪些。所以某个字段适配器不读，只意味着该结构按通用公式处理，
+不构成拒绝理由；只有内核根本没有对应字段的结构才会阻断。
+
+### 6.4 三类推荐方案
 
 | 方案 | 目标 |
 |------|------|
@@ -195,7 +233,7 @@ ModelScope 接入有白名单（`modelscope.cn` / `modelers.cn` 等）、SSRF �
 三类方案由 simulator 的 `solve` 得出，最小卡数方案在显存受限时可能仍是同样的卡数
 （例如 Qwen3-8B 单卡 64 GiB 装不下 TP=1），页面会如实显示。
 
-### 6.4 训练镜像与启动配置
+### 6.5 训练镜像与启动配置
 
 - **镜像目录**：来自光合开发者社区 Harbor 仓库快照，16 个仓库 / 192 个训练相关 tag，
   标注框架、DTK / Python / OS 版本与 `docker pull` 命令
@@ -204,7 +242,7 @@ ModelScope 接入有白名单（`modelscope.cn` / `modelers.cn` 等）、SSRF �
   未在目标环境验证的模板在 YAML 头部和页面上都有明确警告
 - **导出**：YAML 训练配置、Shell 启动脚本、Docker 命令、分布式环境变量、Rendezvous 命令
 
-### 6.5 参数校验
+### 6.6 参数校验
 
 并行整除性（`num_gpus % (tp*cp*pp)`、KV 头数、层数、MoE expert placement）、
 Batch 关系（`GBS = MBS × DP × 梯度累积`）、数据量与步数换算、检查点设置。
@@ -236,6 +274,9 @@ python tests/test_lora_model.py                      # LoRA 模型精度
 python tests/test_lora_api.py                        # LoRA 接口
 python tests/test_calibration_refresh.py             # 校准随数据库更新重建
 python tests/test_model_sources.py                   # 模型来源与兼容性门禁
+python tests/test_adapter_agreement.py               # 适配器选择与内核一致
+python tests/test_support_matrix.py                  # 模型支持矩阵
+python tools/probe_model_support.py                  # 批量探测各系列模型
 ```
 
 ---
@@ -249,6 +290,25 @@ python tests/test_model_sources.py                   # 模型来源与兼容性�
   这是参考仓库自身的行为，网页与 CLI 表现一致。
 - 提取码只存哈希，无法反查明文。
 - 未建模的训练类型（见第 5 节）不提供估算。
+- 模型支持按架构划分，不按发布批次划分（见第 6.3 节）。已实测确认的边界：
+  - **可精确估算**：Qwen3 / Qwen3-VL / Qwen3.5 全系列、DeepSeek-V2/V3/R1、
+    GLM-5 全系列。Kimi-K2 的架构声明就是 `DeepseekV3ForCausalLM`，
+    走 `deepseek_v3` 适配器。
+  - **可估算（近似值）**：Qwen2.5、Llama、Mistral、Phi、Gemma 等标准稠密解码器
+    （走 `generic_gpt`），以及 GLM-4.5。
+  - **不可估算**：
+    - DeepSeek-V3.2 及以后——含 DSA 索引注意力，内核只有 `glm5` 适配器会
+      应用 `index_*` 字段
+    - DeepSeek-V4.1-Flash-1017——多模态视觉塔 + 缺 MLA 字段 + 缺 MoE 层分布
+      参数 + DSA / candidate / dspark / engram 结构
+    - GLM-4.6V-Flash——多模态视觉塔
+    - MiniMax 全系（M2 / M1 / Text-01）——专家数写在 `num_local_experts`，
+      内核只读 `num_experts` 与 `n_routed_experts`，会当成稠密模型算，
+      显存与算力被大幅低估；另有 `attn_type_list`（Lightning 混合注意力）
+      与 `use_mtp` 无对应建模
+  - 兼容性门禁在估算**之前**拦截。这很重要：DeepSeek-V3.2 若直接调内核，
+    它照样能算出数，而且与 DeepSeek-V3 的结果完全一致——那是个看着正常、
+    实际失真的数字。
 
 ---
 

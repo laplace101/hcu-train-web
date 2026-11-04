@@ -171,6 +171,7 @@ async function init() {
   // current model, so they load in the background and do not block the page.
   loadImages();
   loadTemplates();
+  loadSupportMatrix();
 }
 
 function renderTopbar() {
@@ -1224,6 +1225,111 @@ async function loadTemplates() {
   }
 }
 
+// ------------------------------------------------------------- support matrix
+// The kernel models a fixed set of architectures. This table says, for every
+// preset model, whether it can be estimated and what is missing if not.
+let supportMatrix = null;
+
+async function loadSupportMatrix() {
+  const box = $('#support-box');
+  const summary = $('#support-summary');
+  if (!box) return;
+  try {
+    const data = await api('/api/v1/model-support');
+    supportMatrix = data;
+    renderSupportFamilies();
+    renderSupportSummary(data);
+    renderSupportRows();
+  } catch (error) {
+    box.innerHTML = '';
+    box.appendChild(el('p', { class: 'hint hint--bad' },
+      `加载支持矩阵失败：${error.message}`));
+    if (summary) summary.innerHTML = '';
+  }
+}
+
+function renderSupportSummary(data) {
+  const box = $('#support-summary');
+  if (!box) return;
+  const totals = data.totals || {};
+  box.innerHTML = '';
+  const row = el('div', { class: 'support-totals' });
+  [
+    ['可精确估算', totals.estimable, 'ok'],
+    ['可估算（近似）', totals.approximate, 'warn'],
+    ['不可估算', totals.not_estimable, 'bad'],
+  ].forEach(([label, count, kind]) => {
+    row.appendChild(el('div', { class: `support-total support-total--${kind}` }, [
+      el('strong', {}, String(count ?? 0)),
+      el('span', {}, label),
+    ]));
+  });
+  box.appendChild(row);
+
+  // The adapter table explains what each adapter can represent.
+  if (Array.isArray(data.adapters) && data.adapters.length) {
+    const list = el('div', { class: 'support-adapters' });
+    data.adapters.forEach(adapter => {
+      list.appendChild(el('div', { class: 'support-adapter' }, [
+        el('code', {}, adapter.name),
+        el('span', { class: 'hint' }, adapter.description || ''),
+      ]));
+    });
+    box.appendChild(list);
+  }
+}
+
+function renderSupportRows() {
+  const box = $('#support-box');
+  if (!box || !supportMatrix) return;
+  const family = $('#support-family') ? $('#support-family').value : '';
+  const rows = (supportMatrix.models || []).filter(
+    row => !family || (row.family || '其他') === family);
+
+  box.innerHTML = '';
+  if (!rows.length) {
+    box.appendChild(el('p', { class: 'hint' }, '该系列没有预设模型。'));
+    return;
+  }
+
+  const table = el('table', { class: 'support-table' });
+  table.appendChild(el('thead', {}, el('tr', {}, [
+    el('th', {}, '模型'),
+    el('th', {}, '状态'),
+    el('th', {}, '适配器'),
+    el('th', {}, '说明'),
+  ])));
+  const tbody = el('tbody');
+  rows.forEach(row => {
+    const kind = row.status === 'estimable' ? 'ok'
+      : row.status === 'approximate' ? 'warn' : 'bad';
+    const detail = row.status === 'not_estimable'
+      ? (row.reasons || []).join('；')
+      : (row.warnings || []).join('；') || row.adapter_description || '';
+    tbody.appendChild(el('tr', {}, [
+      el('td', {}, el('code', {}, row.reference)),
+      el('td', {}, el('span', { class: `badge badge--${kind}` }, row.status_label)),
+      el('td', {}, row.adapter || '—'),
+      el('td', { class: 'support-detail' }, detail),
+    ]));
+  });
+  table.appendChild(tbody);
+  box.appendChild(table);
+}
+
+function renderSupportFamilies() {
+  const select = $('#support-family');
+  if (!select || !supportMatrix) return;
+  const families = Object.keys(supportMatrix.families || {}).sort();
+  select.innerHTML = '';
+  select.appendChild(el('option', { value: '' }, '全部系列'));
+  families.forEach(name => {
+    const counts = supportMatrix.families[name] || {};
+    select.appendChild(el('option', { value: name },
+      `${name}（${counts.estimable || 0} 可算 / ${counts.not_estimable || 0} 不可算）`));
+  });
+}
+
 /** Render the YAML / shell / docker artefacts for the selected template. */
 async function renderLaunch() {
   const box = $('#launch-box');
@@ -1820,6 +1926,7 @@ function bindEvents() {
   $('#btn-search').addEventListener('click', runSearch);
   $('#btn-validate')?.addEventListener('click', runValidate);
   $('#img-framework')?.addEventListener('change', loadImages);
+  $('#support-family')?.addEventListener('change', renderSupportRows);
   $('#btn-render-launch')?.addEventListener('click', renderLaunch);
 
   $('#profile-select').addEventListener('change', updateProfileNote);

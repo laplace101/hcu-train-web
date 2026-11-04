@@ -238,6 +238,16 @@
           <p class="hint">该模型无法被估算内核表示时，这里列出具体原因与可选做法。</p>
           <div id="model-error-box"></div>
         </div>
+        <div class="card">
+          <h3>模型支持矩阵</h3>
+          <p class="hint">内核只对特定架构建模。这张表列出每个预设模型能否估算、用哪个适配器，以及不可估算时缺什么。</p>
+          <div class="field">
+            <label class="field__label" for="support-family">按系列筛选</label>
+            <select id="support-family" class="input input--select"></select>
+          </div>
+          <div id="support-summary"></div>
+          <div id="support-box"></div>
+        </div>
       </div>
 
       <div class="tab-pane" data-pane="solve">

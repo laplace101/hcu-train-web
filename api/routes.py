@@ -37,6 +37,7 @@ from repositories.hardware import describe_hardware, describe_stacks, resolve_ha
 from services import compatibility
 from services import estimates as estimate_service
 from services import launcher
+from services import support_matrix
 from services.modelscope import (
     ModelSourceError,
     fetch_modelscope_config,
@@ -376,6 +377,59 @@ def render_launch():
 # ---------------------------------------------------------------------------
 # Measured benchmark data (read-only)
 # ---------------------------------------------------------------------------
+
+
+@api.get("/model-support")
+def model_support():
+    """The support matrix over the preset catalogue.
+
+    Every preset model is checked against the compatibility rules, so the
+    matrix reflects what the kernel can actually do.
+    """
+    try:
+        payload = support_matrix.matrix()
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "error": {
+            "code": "support_matrix_failed",
+            "message": f"生成支持矩阵失败：{exc}",
+        }}), 500
+    payload["ok"] = True
+    return jsonify(payload)
+
+
+@api.post("/model-support/check")
+def model_support_check():
+    """Whether one model can be estimated, and what is missing if not.
+
+    Accepts either a resolved config, or a model reference the preset
+    catalogue knows.
+    """
+    body = request.get_json(silent=True) or {}
+    reference = str(body.get("reference") or body.get("model") or "").strip()
+    config = body.get("config")
+
+    if not reference and not config:
+        return jsonify({"ok": False, "error": {
+            "code": "validation_failed",
+            "message": "需要提供 reference 或 config",
+            "details": ["缺少模型引用"],
+        }}), 400
+
+    support = support_matrix.check_reference(
+        reference,
+        config=config,
+        source=body.get("source"),
+        revision=body.get("revision"),
+    )
+    # A model that cannot be estimated is still a successful query — the
+    # answer is the verdict, not an error.
+    return jsonify({"ok": True, **support.to_dict()})
+
+
+@api.get("/model-support/adapters")
+def model_support_adapters():
+    """What each kernel adapter reads from a model config."""
+    return jsonify({"ok": True, "adapters": support_matrix.adapter_capabilities()})
 
 
 @api.get("/measured/info")

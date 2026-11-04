@@ -5,8 +5,11 @@
 #
 # 1. unit / integration tests for the layered API   (tests/test_api_v1.py)
 # 2. image catalogue + launch rendering              (tests/test_launch.py)
-# 3. frontend tests against a real jsdom DOM         (tests/frontend_test.js)
-# 4. the 35/35 accuracy baseline against the simulator
+# 3. the measured-benchmark integration              (tests/test_measured.py)
+# 4. the LoRA resource model and its API             (tests/test_lora_*.py)
+# 5. model sources, adapter agreement, support matrix
+# 6. frontend tests against a real jsdom DOM         (tests/frontend_test.js)
+# 7. the 35/35 accuracy baseline against the simulator
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -44,6 +47,8 @@ run "LoRA 资源模型"       "$PY" tests/test_lora_model.py
 run "LoRA 接口"           "$PY" tests/test_lora_api.py
 run "校准自动重建"       "$PY" tests/test_calibration_refresh.py
 run "模型来源与兼容性"   "$PY" tests/test_model_sources.py
+run "适配器选择一致性"   "$PY" tests/test_adapter_agreement.py
+run "模型支持矩阵"       "$PY" tests/test_support_matrix.py
 
 if command -v node >/dev/null 2>&1 && [ -d node_modules/jsdom ]; then
   run "前端 DOM 流程"     node tests/frontend_test.js

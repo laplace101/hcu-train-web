@@ -29,6 +29,33 @@ const appJs = fs.readFileSync(path.join(ROOT, 'static/js/app.js'), 'utf8');
 // Fixtures are captured from the live server so the test exercises the
 // same payload shapes the UI actually receives.
 const FIXTURES = {
+  '/api/v1/model-support': {
+    ok: true,
+    totals: { estimable: 29, approximate: 5, not_estimable: 1, total: 35 },
+    families: {
+      'Qwen3': { estimable: 8, approximate: 0, not_estimable: 0 },
+      'GLM-5': { estimable: 3, approximate: 0, not_estimable: 0 },
+      'DeepSeek': { estimable: 4, approximate: 0, not_estimable: 1 },
+    },
+    adapters: [
+      { name: 'qwen3', description: 'Qwen3 稠密与 MoE' },
+      { name: 'glm5', description: 'GLM-5，DSA 索引注意力' },
+      { name: 'generic_gpt', description: '通用稠密解码器兜底' },
+    ],
+    models: [
+      { reference: 'qwen3-8b', status: 'estimable', status_label: '可精确估算',
+        adapter: 'qwen3', adapter_description: 'Qwen3 稠密与 MoE',
+        family: 'Qwen3', reasons: [], warnings: [] },
+      { reference: 'qwen2-5-7b', status: 'approximate', status_label: '可估算（近似值）',
+        adapter: 'generic_gpt', adapter_description: '通用稠密解码器兜底',
+        family: 'Qwen3', reasons: [],
+        warnings: ['该模型的结构特征在内核里没有专用适配器'] },
+      { reference: 'deepseek-v3-2-exp', status: 'not_estimable', status_label: '不可估算',
+        adapter: 'deepseek_v3', adapter_description: '',
+        family: 'DeepSeek', warnings: [],
+        reasons: ['该模型包含内核无法表示的结构：DSA 索引注意力结构'] },
+    ],
+  },
   '/api/bootstrap': {
     ok: true,
     simulator: { repo: '/path/to/hcu-train-simulator', version: 'source-checkout' },
@@ -582,6 +609,48 @@ async function main() {
     .dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
   await new Promise(r => setTimeout(r, 300));
   check('成功后清空错误区', errCard.hidden);
+
+  console.log('\n=== ⑳ 模型支持矩阵 ===');
+  const supportBox = doc.querySelector('#support-box');
+  const supportSummary = doc.querySelector('#support-summary');
+  const supportFamily = doc.querySelector('#support-family');
+  check('支持矩阵容器存在', !!supportBox && !!supportSummary);
+  check('系列筛选存在', !!supportFamily);
+  check('请求了支持矩阵',
+    requests.some(r => r.path === '/api/v1/model-support'));
+
+  // The matrix renders after init() resolves its fetch.
+  await new Promise(r => setTimeout(r, 200));
+  const supportRows = supportBox.querySelectorAll('.support-table tbody tr');
+  check('渲染出模型行', supportRows.length === 3, String(supportRows.length));
+  check('显示统计', supportSummary.textContent.includes('29'));
+  check('列出适配器', supportSummary.textContent.includes('qwen3'));
+  check('显示可精确估算', supportBox.textContent.includes('可精确估算'));
+  check('显示近似标注', supportBox.textContent.includes('可估算（近似值）'));
+  check('显示不可估算', supportBox.textContent.includes('不可估算'));
+  check('不可估算时给出原因',
+    supportBox.textContent.includes('DSA 索引注意力结构'));
+
+  // Filtering by family narrows the table.
+  const famSelect = doc.querySelector('#support-family');
+  const optionValues = Array.from(famSelect.options).map(o => o.value);
+  check('系列下拉包含 DeepSeek', optionValues.includes('DeepSeek'),
+    JSON.stringify(optionValues));
+  if (optionValues.includes('DeepSeek')) {
+    famSelect.value = 'DeepSeek';
+    famSelect.dispatchEvent(new window.Event('change', { bubbles: true }));
+    await new Promise(r => setTimeout(r, 100));
+    const filtered = supportBox.querySelectorAll('.support-table tbody tr');
+    check('按系列筛选生效', filtered.length === 1, String(filtered.length));
+    check('筛选后只剩该系列',
+      supportBox.textContent.includes('DSA 索引注意力结构'));
+
+    famSelect.value = '';
+    famSelect.dispatchEvent(new window.Event('change', { bubbles: true }));
+    await new Promise(r => setTimeout(r, 100));
+    check('恢复全部',
+      supportBox.querySelectorAll('.support-table tbody tr').length === 3);
+  }
 
   console.log('\n' + '='.repeat(46));
   if (failures.length) {

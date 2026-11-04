@@ -35,6 +35,7 @@ def main() -> int:
     verdict = compatibility.check_compatibility(qwen)
     check("Qwen3-8B 可估算", verdict["supported"] is True, str(verdict["reasons"])[:80])
     check("匹配到 qwen3 适配器", verdict["adapter"] == "qwen3", str(verdict["adapter"]))
+    check("标记为专用适配器", verdict["adapter_is_specialised"] is True)
 
     vl = json.loads(
         (PROJECT_ROOT / "catalog" / "models" / "qwen3-vl-8b-instruct" / "config.json")
@@ -65,16 +66,56 @@ def main() -> int:
           f"{len(verdict_bad['reasons'])} 条")
     check("指明视觉塔问题",
           any("视觉塔" in r or "多模态" in r for r in verdict_bad["reasons"]))
-    check("指明未建模结构",
-          any("未建模" in r for r in verdict_bad["reasons"]))
+    check("指明内核无法表示的结构",
+          any("无法表示" in r or "未建模" in r for r in verdict_bad["reasons"]),
+          verdict_bad["reasons"][-1][:60] if verdict_bad["reasons"] else "")
     check("给出建议", len(verdict_bad["suggestions"]) > 0)
 
-    print("\n=== ③ 兼容性判定：无适配器 ===")
-    unknown = {"model_type": "some_unknown_model", "architectures": ["FooForCausalLM"]}
+    print("\n=== ②b 通用兜底适配器 ===")
+    # A plain dense decoder with no family-specific fields: the kernel's
+    # generic fallback handles it correctly.
+    dense = {"model_type": "mistral", "architectures": ["MistralForCausalLM"],
+             "num_hidden_layers": 32, "hidden_size": 4096,
+             "num_attention_heads": 32, "num_key_value_heads": 8,
+             "intermediate_size": 14336, "vocab_size": 32000}
+    verdict_dense = compatibility.check_compatibility(dense)
+    check("稠密模型落到通用适配器", verdict_dense["adapter"] == "generic_gpt",
+          str(verdict_dense["adapter"]))
+    check("通用适配器仍可估算", verdict_dense["supported"] is True,
+          str(verdict_dense["reasons"])[:80])
+    check("标记为兜底适配器", verdict_dense["adapter_is_fallback"] is True)
+
+    # A MoE model whose expert count the kernel cannot read would be
+    # modelled as dense — that must be refused.
+    moe_unreadable = {"model_type": "minimax_m2", "architectures": ["MiniMaxM2ForCausalLM"],
+                      "num_hidden_layers": 62, "hidden_size": 3072,
+                      "num_local_experts": 256, "num_experts_per_tok": 8,
+                      "vocab_size": 200064}
+    verdict_moe = compatibility.check_compatibility(moe_unreadable)
+    check("内核读不到的专家数被拦截", verdict_moe["supported"] is False)
+    check("说明会被当成稠密模型",
+          any("稠密" in r for r in verdict_moe["reasons"]),
+          verdict_moe["reasons"][0][:70] if verdict_moe["reasons"] else "")
+
+    print("\n=== ③ 兼容性判定：未知模型类型 ===")
+    # The kernel has a generic fallback adapter, so an unknown *dense*
+    # decoder is still estimated — with the standard decoder formulas.
+    unknown = {"model_type": "some_unknown_model", "architectures": ["FooForCausalLM"],
+               "num_hidden_layers": 32, "hidden_size": 4096, "vocab_size": 32000}
     verdict_unknown = compatibility.check_compatibility(unknown)
-    check("未知模型类型被拒", verdict_unknown["supported"] is False)
-    check("说明没有匹配适配器",
-          any("适配器" in r for r in verdict_unknown["reasons"]))
+    check("未知模型类型落到通用适配器",
+          verdict_unknown["adapter"] == "generic_gpt", str(verdict_unknown["adapter"]))
+    check("标记为兜底适配器", verdict_unknown["adapter_is_fallback"] is True)
+    check("普通稠密结构仍可估算", verdict_unknown["supported"] is True,
+          str(verdict_unknown["reasons"])[:80])
+
+    # But an unknown model with an architecture the kernel cannot read must
+    # still be refused.
+    unknown_moe = {"model_type": "some_unknown_model",
+                   "architectures": ["FooForCausalLM"],
+                   "num_local_experts": 128, "num_experts_per_tok": 4}
+    verdict_unknown_moe = compatibility.check_compatibility(unknown_moe)
+    check("未知模型的可读专家数仍被拦截", verdict_unknown_moe["supported"] is False)
 
     print("\n=== ④ ModelScope 模型走仿真接口 ===")
     # A resolvable public repository. The network may be unavailable in some
