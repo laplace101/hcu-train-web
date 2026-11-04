@@ -81,17 +81,46 @@ PROBE_PARALLEL = {
 }
 
 
-def _fetch_hf(repo_id: str) -> tuple[dict, str | None]:
-    """Fetch a config from the Hugging Face mirror."""
+#: The proxy the local environment reaches the Hugging Face mirror through.
+#: A background process does not necessarily inherit it, and the mirror is
+#: unreachable without it — so the address is resolved here rather than
+#: being left to the environment.
+HF_PROXY_CANDIDATES = (
+    "http://127.0.0.1:10808",
+    "http://localhost:10808",
+)
+
+
+def _proxy_for_hf() -> str | None:
+    """The proxy to use for the Hugging Face mirror, if one is reachable."""
     import os
     import urllib.request
 
-    proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
+    candidates = [os.environ.get("HTTPS_PROXY"), os.environ.get("HTTP_PROXY")]
+    candidates.extend(HF_PROXY_CANDIDATES)
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({"http": candidate, "https": candidate}))
+            with opener.open("https://huggingface.co/api/models/gpt2", timeout=8):
+                return candidate
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
+def _fetch_hf(repo_id: str) -> tuple[dict, str | None]:
+    """Fetch a config from the Hugging Face mirror."""
+    import urllib.request
+
+    proxy = _proxy_for_hf()
     handlers = {"http": proxy, "https": proxy} if proxy else {}
     opener = urllib.request.build_opener(urllib.request.ProxyHandler(handlers))
     url = f"https://huggingface.co/{repo_id}/resolve/main/config.json"
     req = urllib.request.Request(url, headers={"User-Agent": "dcu-train-web/2.0"})
-    with opener.open(req, timeout=40) as response:
+    with opener.open(req, timeout=60) as response:
         return json.loads(response.read().decode()), None
 
 

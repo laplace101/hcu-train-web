@@ -309,6 +309,17 @@ python tools/probe_model_support.py                  # 批量探测各系列模�
   - 兼容性门禁在估算**之前**拦截。这很重要：DeepSeek-V3.2 若直接调内核，
     它照样能算出数，而且与 DeepSeek-V3 的结果完全一致——那是个看着正常、
     实际失真的数字。
+  - 门禁拦下的模型，内核其实也能算出数——但那个数是错的。MiniMax-M2 是
+    230B 总参 / 10B 激活的 MoE，内核按稠密模型算出的峰值显存是 67.48 GiB，
+    而同为 MoE 的 Qwen3-30B-A3B 是 239.65 GiB，低了 3.5 倍：256 个专家被
+    当成了一个稠密 FFN。更直接的证据是 MiniMax-M1 与 MiniMax-Text-01
+    算出的数字完全相同（127768.23 ms / 270.05 GiB）——两者层数与隐藏维度
+    不同，本该有差异。
+  - 门禁的方向与内核一致，不是臆断。内核自己在
+    `config/models.py` 有一道防线：多模态模型配纯文本适配器时直接抛
+    `accepted a vision_config but built a text-only ModuleSpec; refusing to
+    drop the vision model`。门禁只是把这一步提前到拉取 config 之后、
+    估算之前，让用户看到「缺什么」而不是一个 Python 异常。
 
 ---
 
