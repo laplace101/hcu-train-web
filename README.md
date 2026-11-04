@@ -135,6 +135,11 @@ LoRA 不套用全参训练的数字，而是有自己的资源模型：
 **实测库是只读的**（`mode=ro` 由 SQLite 强制拒绝写入），校准以数据库文件与
 WAL sidecar 的大小和修改时间为指纹，新数据入库后自动重建。
 
+> 校准以 `tokens_per_s`（实测吞吐）反推单步时间，而不是直接用库里的
+> `step_time_s` 字段——该字段在不同采集批次间口径不一致（有的记单步、
+> 有的记一个梯度累积周期），反推值与字段值的比值正好是累积步数的整数倍。
+> 改用吞吐反推后，多样本拟合组的单步时间误差从 24% 降到 9%。
+
 当前实测覆盖：6 个模型 × {none, z3} × {liger 开/关}，bs 1–32，seq 2048/4096，
 均为 BW1000 真机 LLaMA-Factory + DeepSpeed 记录。
 
@@ -162,7 +167,24 @@ ModelScope 接入有白名单（`modelscope.cn` / `modelers.cn` 等）、SSRF �
 2 MiB 响应上限、30 秒超时，并记录 revision 以保证结果可复现。外部服务失败时
 回落到本地上传路径，不阻断整个流程。
 
-### 6.2 三类推荐方案
+**ModelScope 模型可直接参与仿真**：`_build_from_request` 会把不是预设 slug 的
+引用当作 ModelScope 仓库处理，拉取 config 并缓存到 `runtime/modelscope/<repo>-<hash>/`，
+后续同一模型不再重复下载。
+
+### 6.2 模型兼容性门禁
+
+内核只有固定的模型适配器集合。某些模型落到不适配的适配器上——例如多模态模型
+落到纯文本适配器、缺少 MLA 字段、带有内核未建模的结构。强行计算会得到失真数字，
+所以 `services/compatibility.py` 在**估算之前**判定并拒绝，返回结构化的原因与建议：
+
+- 该模型是多模态模型，而内核把它匹配到了文本适配器 `deepseek_v3`
+- 缺少 MLA 字段（`kv_lora_rank` / `qk_nope_head_dim`），注意力布局无法确定
+- 含有内核未建模的结构（DSA 索引注意力、dspark、engram 等）
+- 缺少 MoE 层分布参数（`moe_layer_freq` / `first_k_dense_replace`）
+
+界面在「参数校验」页逐条列出原因与可选做法，而不是给一句断言消息。
+
+### 6.3 三类推荐方案
 
 | 方案 | 目标 |
 |------|------|
@@ -173,7 +195,7 @@ ModelScope 接入有白名单（`modelscope.cn` / `modelers.cn` 等）、SSRF �
 三类方案由 simulator 的 `solve` 得出，最小卡数方案在显存受限时可能仍是同样的卡数
 （例如 Qwen3-8B 单卡 64 GiB 装不下 TP=1），页面会如实显示。
 
-### 6.3 训练镜像与启动配置
+### 6.4 训练镜像与启动配置
 
 - **镜像目录**：来自光合开发者社区 Harbor 仓库快照，16 个仓库 / 192 个训练相关 tag，
   标注框架、DTK / Python / OS 版本与 `docker pull` 命令
@@ -182,7 +204,7 @@ ModelScope 接入有白名单（`modelscope.cn` / `modelers.cn` 等）、SSRF �
   未在目标环境验证的模板在 YAML 头部和页面上都有明确警告
 - **导出**：YAML 训练配置、Shell 启动脚本、Docker 命令、分布式环境变量、Rendezvous 命令
 
-### 6.4 参数校验
+### 6.5 参数校验
 
 并行整除性（`num_gpus % (tp*cp*pp)`、KV 头数、层数、MoE expert placement）、
 Batch 关系（`GBS = MBS × DP × 梯度累积`）、数据量与步数换算、检查点设置。
@@ -213,6 +235,7 @@ python tests/test_task_difference.py                 # 预训练 vs SFT 实测�
 python tests/test_lora_model.py                      # LoRA 模型精度
 python tests/test_lora_api.py                        # LoRA 接口
 python tests/test_calibration_refresh.py             # 校准随数据库更新重建
+python tests/test_model_sources.py                   # 模型来源与兼容性门禁
 ```
 
 ---

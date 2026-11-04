@@ -43,6 +43,7 @@ run "实测数据接入"        "$PY" tests/test_measured.py
 run "LoRA 资源模型"       "$PY" tests/test_lora_model.py
 run "LoRA 接口"           "$PY" tests/test_lora_api.py
 run "校准自动重建"       "$PY" tests/test_calibration_refresh.py
+run "模型来源与兼容性"   "$PY" tests/test_model_sources.py
 
 if command -v node >/dev/null 2>&1 && [ -d node_modules/jsdom ]; then
   run "前端 DOM 流程"     node tests/frontend_test.js

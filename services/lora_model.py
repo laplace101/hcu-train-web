@@ -180,10 +180,11 @@ def estimate_lora(
     group = _measured_group(slug, ds_config, liger)
 
     # ---- throughput -------------------------------------------------
-    fit = calibration_module.step_time_fit(cal, slug, ds_config, liger)
+    fit = calibration_module.step_time_fit(cal, slug, ds_config, liger, seq_length)
     fit_source = "measured_fit"
     if fit is None:
-        fit = calibration_module.nearest_model_fit(cal, params_b, ds_config, liger)
+        fit = calibration_module.nearest_model_fit(
+            cal, params_b, ds_config, liger, seq_length)
         fit_source = "nearest_model_fit" if fit else "none"
 
     step_time_s = None
@@ -195,6 +196,8 @@ def estimate_lora(
             "max_error_percent": fit.get("max_error_percent"),
             "samples": fit.get("samples"),
             "fitted_slug": fit.get("slug"),
+            "fitted_seq_length": fit.get("seq_length"),
+            "seq_match": fit.get("seq_length") == seq_length,
             "source": fit_source,
             "confidence": fit.get("confidence", "measured_fit"),
             "params_gap_b": fit.get("params_gap_b"),

@@ -17,6 +17,8 @@ New product APIs live under `/api/v1` (plan §8).
 
 from __future__ import annotations
 
+import json
+import re
 import sys
 import time
 import traceback
@@ -180,6 +182,11 @@ def api_simulate():
         return jsonify({"ok": True, "result": outcome})
     except engine.SimulationError as exc:
         return jsonify({"ok": False, "error": str(exc), "log": exc.log}), 400
+    except ModelNotSupported as exc:
+        return jsonify({"ok": False, "error": "内核无法为该模型给出可信估算",
+                        "reasons": exc.verdict.get("reasons", []),
+                        "suggestions": exc.verdict.get("suggestions", []),
+                        "model_summary": compatibility_summary(exc.verdict)}), 422
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     except Exception as exc:  # noqa: BLE001
@@ -202,6 +209,11 @@ def api_solve():
         return jsonify({"ok": True, "result": outcome})
     except engine.SimulationError as exc:
         return jsonify({"ok": False, "error": str(exc), "log": exc.log}), 400
+    except ModelNotSupported as exc:
+        return jsonify({"ok": False, "error": "内核无法为该模型给出可信估算",
+                        "reasons": exc.verdict.get("reasons", []),
+                        "suggestions": exc.verdict.get("suggestions", []),
+                        "model_summary": compatibility_summary(exc.verdict)}), 422
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     except Exception as exc:  # noqa: BLE001
@@ -220,6 +232,11 @@ def api_search():
         return jsonify({"ok": True, "result": outcome})
     except engine.SimulationError as exc:
         return jsonify({"ok": False, "error": str(exc), "log": exc.log}), 400
+    except ModelNotSupported as exc:
+        return jsonify({"ok": False, "error": "内核无法为该模型给出可信估算",
+                        "reasons": exc.verdict.get("reasons", []),
+                        "suggestions": exc.verdict.get("suggestions", []),
+                        "model_summary": compatibility_summary(exc.verdict)}), 422
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     except Exception as exc:  # noqa: BLE001
@@ -234,6 +251,105 @@ def api_health():
         return jsonify({"ok": True, "simulator_src": str(src)})
     except Exception as exc:  # noqa: BLE001
         return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+def _resolve_modelscope_model(reference: str) -> tuple[str, dict[str, Any]]:
+    """Resolve a ModelScope repository reference into a local config path.
+
+    The config is cached under `runtime/modelscope/<repo>/` so a repeated
+    simulation of the same model does not re-fetch it, and so the exact
+    revision that produced a number can be looked up afterwards.
+
+    The whitelist, SSRF protection, size cap and timeout all come from
+    `services/modelscope.py` — this function only adds the cache.
+    """
+    from services import modelscope as modelscope_service
+
+    reference = (reference or "").strip()
+    if not reference:
+        raise ValueError("请选择或输入模型")
+
+    cache_root = paths.RUNTIME_DIR / "modelscope"
+    cache_root.mkdir(parents=True, exist_ok=True)
+
+    try:
+        resolved = modelscope_service.fetch_modelscope_config(reference)
+    except modelscope_service.ModelSourceError as exc:
+        raise ValueError(
+            f"无法读取 ModelScope 模型（{reference}）：{exc}。"
+            "请确认仓库名正确且 config.json 可公开访问，"
+            "或改用「上传文件 / 粘贴 JSON」。"
+        ) from exc
+
+    repo_slug = re.sub(r"[^A-Za-z0-9_.\-]+", "-", resolved.repo_id or reference).strip("-")
+    stamp = resolved.config_hash[:12] if resolved.config_hash else "latest"
+    target_dir = cache_root / f"{repo_slug}-{stamp}"
+    config_path = target_dir / "config.json"
+
+    if not config_path.exists():
+        target_dir.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            json.dumps(resolved.config, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
+    source_info = {
+        "kind": "modelscope",
+        "label": resolved.repo_id or reference,
+        "repo_id": resolved.repo_id,
+        "revision": resolved.revision,
+        "config_hash": resolved.config_hash,
+        "cached_path": str(config_path),
+        "warnings": list(resolved.warnings),
+    }
+    return str(config_path), source_info
+
+
+def compatibility_summary(verdict: dict[str, Any]) -> str:
+    """A short description of the model that could not be estimated."""
+    from services import compatibility
+
+    adapter = verdict.get("adapter")
+    model_type = verdict.get("model_type") or "?"
+    parts = [f"model_type={model_type}"]
+    if adapter:
+        parts.append(f"匹配到适配器 {adapter}")
+    if verdict.get("has_vision"):
+        parts.append("含视觉塔")
+    return " · ".join(parts)
+
+
+def _check_model_compatibility(model_path: str, source_info: dict[str, Any]) -> dict[str, Any]:
+    """Refuse a model the estimator kernel cannot represent.
+
+    The kernel would either fail deep inside the simulator with an
+    assertion, or approximate an architecture it has no profile for. Both
+    are worse than saying so here, where the user can act on it.
+    """
+    from services import compatibility
+
+    try:
+        config = json.loads(Path(model_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"supported": True, "reasons": [], "suggestions": []}
+
+    verdict = compatibility.check_compatibility(config)
+    if verdict["supported"]:
+        return verdict
+
+    source_info["compatibility"] = verdict
+    raise ModelNotSupported(verdict)
+
+
+class ModelNotSupported(ValueError):
+    """The estimator kernel cannot represent this model.
+
+    Carries the structured reasons so the API can return them as a list
+    instead of one long sentence.
+    """
+
+    def __init__(self, verdict: dict[str, Any]):
+        super().__init__("；".join(verdict.get("reasons") or []))
+        self.verdict = verdict
 
 
 def _build_from_request() -> dict[str, Any]:
@@ -254,12 +370,20 @@ def _build_from_request() -> dict[str, Any]:
     elif model_ref.startswith("upload:"):
         model_path = model_ref[len("upload:"):]
         source_info = {"kind": "upload", "label": Path(model_path).parent.name}
+    elif model_ref.startswith("modelscope:"):
+        model_path, source_info = _resolve_modelscope_model(model_ref[len("modelscope:"):])
     else:
         entry = catalog_module.get_entry(model_ref)
-        if not entry:
-            raise ValueError(f"未找到预设模型: {model_ref}")
-        model_path = str(paths.APP_ROOT / entry["config_path"])
-        source_info = {"kind": "preset", "label": entry["name"], "adapter": entry.get("adapter")}
+        if entry is None:
+            # A bare reference that is not a catalogue slug is treated as a
+            # ModelScope repository, so a model pulled from the community
+            # works without a separate lookup step.
+            model_path, source_info = _resolve_modelscope_model(model_ref)
+        else:
+            model_path = str(paths.APP_ROOT / entry["config_path"])
+            source_info = {"kind": "preset", "label": entry["name"], "adapter": entry.get("adapter")}
+
+    _check_model_compatibility(model_path, source_info)
 
     parallel = {
         key: value

@@ -538,6 +538,51 @@ async function main() {
       loraReq ? String(loraReq.body.lora_liger) : '');
   }
 
+  console.log('\n=== ⑲ 模型兼容性错误展示 ===');
+  const errCard = doc.querySelector('#model-error-card');
+  const errBox = doc.querySelector('#model-error-box');
+  check('模型错误卡片存在', !!errCard && !!errBox);
+
+  // Make the next simulate call fail with structured reasons.
+  const origFetch = window.fetch;
+  window.fetch = async (url, options = {}) => {
+    if (String(url).includes('/api/simulate')) {
+      return {
+        ok: false, status: 422,
+        json: async () => ({
+          ok: false,
+          error: '内核无法为该模型给出可信估算',
+          reasons: ['该模型是多模态模型，而内核把它匹配到了文本适配器',
+                    '该模型包含内核未建模的结构：DSA 索引注意力结构'],
+          suggestions: ['内核尚未提供 DeepSeek 系多模态适配器',
+                        '如需评估该模型，请等待内核支持'],
+          model_summary: 'model_type=deepseek_v41 · 匹配到适配器 deepseek_v3',
+        }),
+      };
+    }
+    return origFetch(url, options);
+  };
+
+  doc.getElementById('btn-simulate')
+    .dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await new Promise(r => setTimeout(r, 300));
+
+  check('错误卡片可见', errCard && !errCard.hidden);
+  check('显示通用说明',
+    errBox && errBox.textContent.includes('无法为该模型给出可信估算'));
+  check('逐条列出原因', errBox.querySelectorAll('.reason-list li').length >= 2,
+    String(errBox.querySelectorAll('.reason-list li').length));
+  check('列出建议',
+    errBox.textContent.includes('内核尚未提供'),
+    errBox.textContent.match(/内核尚未提供[^\n]{0,20}/)?.[0] || '');
+
+  // A successful run must clear the box.
+  window.fetch = origFetch;
+  doc.getElementById('btn-simulate')
+    .dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await new Promise(r => setTimeout(r, 300));
+  check('成功后清空错误区', errCard.hidden);
+
   console.log('\n' + '='.repeat(46));
   if (failures.length) {
     console.log(`FAILED ${failures.length}: ${failures.join(', ')}`);

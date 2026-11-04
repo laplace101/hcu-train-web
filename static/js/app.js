@@ -73,8 +73,63 @@ async function api(path, options = {}) {
   let payload;
   try { payload = await response.json(); }
   catch { throw new Error(`服务端返回了非 JSON 响应（HTTP ${response.status}）`); }
-  if (!payload.ok) throw new Error(payload.error || `请求失败（HTTP ${response.status}）`);
+  if (!payload.ok) {
+    const err = new Error(payload.error || `请求失败（HTTP ${response.status}）`);
+    // The v1 API returns structured reasons for an unsupported model.
+    err.reasons = payload.reasons || payload.error?.details || [];
+    err.suggestions = payload.suggestions || payload.error?.suggestions || [];
+    err.code = payload.error?.code;
+    throw err;
+  }
   return payload;
+}
+
+/** Hide the model-compatibility error box before a new run. */
+function clearModelError() {
+  const box = $('#model-error-box');
+  const card = $('#model-error-card');
+  if (box) { box.hidden = true; box.innerHTML = ''; }
+  if (card) card.hidden = true;
+}
+
+/**
+ * Render an error that carries structured reasons.
+ *
+ * A model the kernel cannot represent comes back with a list of reasons
+ * and suggestions; showing them as a list is far more useful than one
+ * long sentence in a toast.
+ */
+function showModelError(error) {
+  const reasons = error.reasons || [];
+  const suggestions = error.suggestions || [];
+  if (!reasons.length) {
+    toast(error.message, 'bad');
+    return;
+  }
+  const box = $('#model-error-box');
+  const card = $('#model-error-card');
+  if (!box) {
+    toast(error.message, 'bad');
+    return;
+  }
+  if (card) card.hidden = false;
+  box.hidden = false;
+  box.innerHTML = '';
+  box.appendChild(el('div', { class: 'notice notice--error' },
+    el('strong', {}, error.message || '内核无法为该模型给出可信估算')));
+  const list = el('ul', { class: 'reason-list' });
+  reasons.forEach(r => list.appendChild(el('li', {}, r)));
+  box.appendChild(list);
+  if (suggestions.length) {
+    const s = el('div', { class: 'notice notice--info' });
+    s.appendChild(el('strong', {}, '可以这样做'));
+    const sl = el('ul', { class: 'reason-list' });
+    suggestions.forEach(x => sl.appendChild(el('li', {}, x)));
+    s.appendChild(sl);
+    box.appendChild(s);
+  }
+  switchTab('validate');
+  toast('该模型暂不支持估算', 'bad');
 }
 
 function busy(isBusy) {
@@ -802,6 +857,7 @@ function buildV1Payload() {
 // ---------------------------------------------------------------- actions
 async function runSimulate() {
   if (!requireModel()) return;
+  clearModelError();
   busy(true); setStatus('仿真计算中…', 'busy'); switchTab('summary');
   try {
     const payload = await api('/api/simulate', {
@@ -815,14 +871,19 @@ async function runSimulate() {
     setStatus(`完成 · ${payload.result.elapsed_ms} ms`, 'ok');
   } catch (error) {
     setStatus('仿真失败', 'bad');
-    toast(error.message, 'bad');
-    $('#log-box').textContent = error.message;
-    switchTab('log');
+    if (error.reasons && error.reasons.length) {
+      showModelError(error);
+    } else {
+      toast(error.message, 'bad');
+      $('#log-box').textContent = error.message;
+      switchTab('log');
+    }
   } finally { busy(false); }
 }
 
 async function runSolve() {
   if (!requireModel()) return;
+  clearModelError();
   busy(true); setStatus('求解三类方案中…', 'busy'); switchTab('plans');
   try {
     // The v1 search endpoint returns the three plan types the product
@@ -842,10 +903,14 @@ async function runSolve() {
     setStatus(`求解完成 · ${payload.elapsed_ms} ms`, 'ok');
   } catch (error) {
     setStatus('求解失败', 'bad');
-    toast(error.message, 'bad');
-    const box = $('#plans-box');
-    if (box) box.innerHTML = `<div class="note">${escapeHtml(error.message)}</div>`;
-    switchTab('log');
+    if (error.reasons && error.reasons.length) {
+      showModelError(error);
+    } else {
+      toast(error.message, 'bad');
+      const box = $('#plans-box');
+      if (box) box.innerHTML = `<div class="note">${escapeHtml(error.message)}</div>`;
+      switchTab('log');
+    }
   } finally { busy(false); }
 }
 
@@ -1680,8 +1745,9 @@ async function resolveModelScope() {
   state.modelSource = payload.provenance || null;
   state.modelFacts = payload.facts || null;
   state.modelRef = payload.provenance?.repo_id || ref;
-  // A ModelScope model is not a catalogue entry — clear the slug so the
-  // server does not try to resolve it there.
+  // The backend resolves a bare reference that is not a catalogue slug as
+  // a ModelScope repository, and caches the config on its side.
+  state.modelSource = payload.provenance || null;
   state.modelSlug = null;
   state.model = null;
   state.customSummary = null;
@@ -1726,7 +1792,9 @@ function bindEvents() {
       state.modelRef = state.modelTab === 'preset' ? state.model?.slug || null : state.modelRef;
       if (state.modelTab === 'preset' && state.model) {
         state.modelRef = state.model.slug;
+        state.modelSlug = state.model.slug;
         state.customSummary = null;
+        state.modelSource = null;
         renderPresetSummary();
       }
     });

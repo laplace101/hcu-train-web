@@ -126,21 +126,61 @@ def _measured_rows() -> list[dict[str, Any]]:
     return joined
 
 
-def _fit_step_time(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """Fit `step_time = fixed + k * bs` per (model, ds, liger) group.
+def _effective_step_time(row: dict[str, Any]) -> float | None:
+    """The time for one training step, derived from the measured throughput.
 
-    The measured `step_time_s` is one micro-batch, and it grows almost
-    linearly with the micro-batch size once the fixed overhead is removed.
+    The database's `step_time_s` column is not consistent across ingestion
+    runs: some batches recorded the time of a single micro-step, others the
+    time of a full gradient-accumulation cycle. The ratios between the
+    stored value and the derived one come out as clean multiples of the
+    accumulation factor, which is how the inconsistency was found.
+
+    `tokens_per_s` (per card) is recorded consistently, so the step time is
+    derived from it instead:
+
+        tokens_per_s = bs × seq × num_gpus / step_time
+        → step_time = bs × seq × num_gpus / tokens_per_s
+
+    Rows without a usable throughput fall back to the stored value.
+    """
+    throughput = row.get("tokens_per_s")
+    bs = row.get("bs")
+    seq = row.get("cutoff_len")
+    gpus = row.get("gpu_count") or 1
+    if throughput and bs and seq:
+        derived = bs * seq * gpus / throughput
+        if derived > 0:
+            return derived
+    stored = row.get("step_time_s")
+    return float(stored) if stored else None
+
+
+def _fit_step_time(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Fit `step_time = fixed + k * bs` per (model, ds, liger, seq) group.
+
+    The step time grows almost linearly with the micro-batch size once the
+    fixed overhead is removed. The sequence length is part of the group key
+    because it changes the activation footprint.
     """
     groups: dict[tuple, list[dict[str, Any]]] = {}
     for row in rows:
-        if row.get("step_time_s") is None or not row.get("bs"):
+        if not row.get("bs"):
             continue
-        key = (row["slug"], str(row.get("ds_config") or "none"), int(row.get("liger") or 0))
+        step = _effective_step_time(row)
+        if step is None:
+            continue
+        row = dict(row)
+        row["_effective_step_time"] = step
+        key = (
+            row["slug"],
+            str(row.get("ds_config") or "none"),
+            int(row.get("liger") or 0),
+            row.get("cutoff_len"),
+        )
         groups.setdefault(key, []).append(row)
 
     fits: list[dict[str, Any]] = []
-    for (slug, ds, liger), group in groups.items():
+    for (slug, ds, liger, seq_length), group in groups.items():
         X = [[1.0, float(r["bs"])] for r in group]
         y = [float(r["step_time_s"]) for r in group]
 
@@ -155,11 +195,12 @@ def _fit_step_time(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 if f["slug"] == slug and f["ds_config"] != ds and f["liger"] == liger
             ]
             per_sample = sibling[0]["per_sample_s"] if sibling else 0.0
-            fixed = float(row["step_time_s"]) - per_sample * float(row["bs"])
+            fixed = float(row["_effective_step_time"]) - per_sample * float(row["bs"])
             fits.append({
                 "slug": slug,
                 "ds_config": ds,
                 "liger": liger,
+                "seq_length": group[0].get("cutoff_len"),
                 "fixed_s": round(fixed, 4),
                 "per_sample_s": round(per_sample, 6),
                 "samples": len(group),
@@ -179,13 +220,15 @@ def _fit_step_time(rows: list[dict[str, Any]]) -> dict[str, Any]:
         if per_sample <= 0:
             continue
         errors = [
-            (coef[0] + coef[1] * r["bs"] - r["step_time_s"]) / r["step_time_s"] * 100
+            (coef[0] + coef[1] * r["bs"] - r["_effective_step_time"])
+            / r["_effective_step_time"] * 100
             for r in group
         ]
         fits.append({
             "slug": slug,
             "ds_config": ds,
             "liger": liger,
+            "seq_length": group[0].get("cutoff_len"),
             "fixed_s": round(fixed, 4),
             "per_sample_s": round(per_sample, 6),
             "samples": len(group),
@@ -396,14 +439,30 @@ def build_calibration(*, refresh: bool = False) -> dict[str, Any]:
 
 
 def step_time_fit(calibration: dict[str, Any], slug: str | None,
-                   ds_config: str = "none", liger: int = 1) -> dict[str, Any] | None:
-    """Find the step-time fit for a model / ZeRO / Liger combination."""
+                   ds_config: str = "none", liger: int = 1,
+                   seq_length: int | None = None) -> dict[str, Any] | None:
+    """Find the step-time fit for a model / ZeRO / Liger / sequence length.
+
+    The sequence length is part of the fit's group key, so the closest
+    match is preferred over any other combination.
+    """
     fits = calibration.get("step_time", {}).get("fits", [])
-    exact = [f for f in fits if f["slug"] == slug
-             and f["ds_config"] == ds_config and f["liger"] == liger]
+    if not fits:
+        return None
+
+    def candidates(model: str | None, stage: str, lig: int):
+        return [f for f in fits
+                if f["slug"] == model and f["ds_config"] == stage and f["liger"] == lig]
+
+    exact = candidates(slug, ds_config, liger)
     if exact:
+        if seq_length is not None:
+            same_seq = [f for f in exact if f.get("seq_length") == seq_length]
+            if same_seq:
+                return same_seq[0]
         return exact[0]
-    # Same model, different ZeRO stage.
+
+    # Same model, a different ZeRO stage.
     same_model = [f for f in fits if f["slug"] == slug]
     if same_model:
         return same_model[0]
@@ -411,7 +470,8 @@ def step_time_fit(calibration: dict[str, Any], slug: str | None,
 
 
 def nearest_model_fit(calibration: dict[str, Any], params_b: float | None,
-                      ds_config: str = "none", liger: int = 1) -> dict[str, Any] | None:
+                      ds_config: str = "none", liger: int = 1,
+                      seq_length: int | None = None) -> dict[str, Any] | None:
     """Fall back to the fit whose model size is closest.
 
     This is an extrapolation across models, so the result is marked
@@ -425,6 +485,10 @@ def nearest_model_fit(calibration: dict[str, Any], params_b: float | None,
     if not candidates:
         return None
     same_ds = [f for f in candidates if f["ds_config"] == ds_config] or candidates
+    if seq_length is not None:
+        same_seq = [f for f in same_ds if f.get("seq_length") == seq_length]
+        if same_seq:
+            same_ds = same_seq
     best = min(same_ds, key=lambda f: abs((f["params_b"] or 0) - params_b))
     return {
         **best,

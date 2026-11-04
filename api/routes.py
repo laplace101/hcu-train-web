@@ -34,6 +34,7 @@ from repositories import images as image_repo
 from repositories import measured as measured_repo
 from repositories import templates as template_repo
 from repositories.hardware import describe_hardware, describe_stacks, resolve_hardware
+from services import compatibility
 from services import estimates as estimate_service
 from services import launcher
 from services.modelscope import (
@@ -254,6 +255,18 @@ def _run_estimate(action: str):
         )
     except estimate_service.UnsupportedModeError as exc:
         return _error("mode_not_modelled", str(exc), status=422)
+    except estimate_service.ModelUnsupported as exc:
+        verdict = exc.verdict
+        return jsonify({
+            "ok": False,
+            "error": {
+                "code": "model_not_supported",
+                "message": "内核无法为该模型给出可信估算",
+                "details": verdict.get("reasons", []),
+                "suggestions": verdict.get("suggestions", []),
+                "model_summary": verdict.get("model_type"),
+            },
+        }), 422
     except estimate_service.ScenarioRejected as exc:
         return _error("validation_failed", str(exc), getattr(exc, "issues", None))
     except EstimationError as exc:

@@ -31,6 +31,7 @@ from estimators.adapter import UnsupportedModeError
 from engine import config_builder
 from repositories import measured as measured_repo
 from repositories.hardware import HARDWARE_PROFILES, resolve_hardware
+from services import compatibility
 from services import lora_calibration, lora_model
 from services.validation import has_errors, validate_scenario
 
@@ -618,6 +619,23 @@ def _estimate_lora(scenario: TrainingScenario, spec: Any) -> dict[str, Any]:
     }
 
 
+class ModelUnsupported(Exception):
+    """The estimator kernel cannot represent this model."""
+
+    def __init__(self, verdict: dict[str, Any]):
+        super().__init__("；".join(verdict.get("reasons") or []))
+        self.verdict = verdict
+
+
+def _read_config_file(path: str | None) -> dict[str, Any]:
+    if not path:
+        return {}
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
 def estimate(
     scenario: TrainingScenario,
     *,
@@ -659,6 +677,13 @@ def estimate(
                 "suggestion": "请在模型选择中指定预设模型，或用 ModelScope / 上传提供 config.json",
             }],
         )
+
+    # Refuse a model the kernel cannot represent, before running it. The
+    # simulator would fail deep inside with an assertion, or worse,
+    # approximate an architecture it has no profile for.
+    verdict = compatibility.check_compatibility(_read_config_file(config_path))
+    if not verdict["supported"]:
+        raise ModelUnsupported(verdict)
 
     facts = model_facts(model_config or load_model_facts(scenario.model_slug, config_path))
 

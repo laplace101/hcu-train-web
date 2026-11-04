@@ -60,7 +60,7 @@ def main() -> int:
     rows = [dict(r) for r in conn.execute(
         "SELECT model, gpu_count, bs, cutoff_len, ds_config, liger, step_time_s, "
         "tokens_per_s, peak_mem_mib FROM v_train_bench "
-        "WHERE status='OK' AND step_time_s IS NOT NULL"
+        "WHERE status='OK' AND step_time_s IS NOT NULL AND tokens_per_s IS NOT NULL"
     )]
     conn.close()
     slug_by = _slug_map()
@@ -76,7 +76,15 @@ def main() -> int:
             liger=int(row["liger"] or 0), calibration=cal,
         )
         conf = (est.get("throughput_confidence") or {}).get("confidence", "?")
-        step_err = (est["step_time_s"] - row["step_time_s"]) / row["step_time_s"] * 100
+        # Compare against the same reference the model uses: the step time
+        # derived from the measured throughput. The stored `step_time_s`
+        # column is inconsistent across ingestion runs, which is why the
+        # calibration derives its own.
+        reference = row["step_time_s"]
+        if row.get("tokens_per_s") and row.get("bs") and row.get("cutoff_len"):
+            reference = (row["bs"] * row["cutoff_len"] * (row["gpu_count"] or 1)
+                         / row["tokens_per_s"])
+        step_err = (est["step_time_s"] - reference) / reference * 100
         mem_err = (est["peak_gib"] - row["peak_mem_mib"] / 1024) / (row["peak_mem_mib"] / 1024) * 100
         buckets.setdefault(conf, []).append((step_err, mem_err, row))
 

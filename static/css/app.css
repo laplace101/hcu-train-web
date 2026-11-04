@@ -438,3 +438,15 @@ table.data .num { text-align: right; }
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   margin: 10px 0;
 }
+
+/* ------------------------------------------------------------ model errors
+   A model the kernel cannot represent comes back with several reasons.
+   They are listed rather than flattened into one sentence. */
+.reason-list {
+  margin: 8px 0 0;
+  padding-left: 20px;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.reason-list li { margin-bottom: 5px; }
+.reason-list li::marker { color: var(--text-dim); }
