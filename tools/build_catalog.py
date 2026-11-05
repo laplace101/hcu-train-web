@@ -65,6 +65,10 @@ MODELS: list[tuple[str, str, str, str]] = [
     ("deepseek-ai/DeepSeek-V2-Lite", "DeepSeek", "DeepSeek-V2-Lite", "moe"),
     ("deepseek-ai/DeepSeek-V3.2-Exp", "DeepSeek", "DeepSeek-V3.2-Exp", "moe"),
     ("deepseek-ai/DeepSeek-R1", "DeepSeek", "DeepSeek-R1", "moe"),
+    # ---- MiniMax (adapter: minimax_family) ----
+    ("MiniMaxAI/MiniMax-M2", "MiniMax", "MiniMax-M2", "moe"),
+    ("MiniMaxAI/MiniMax-M1", "MiniMax", "MiniMax-M1", "moe"),
+    ("MiniMaxAI/MiniMax-Text-01", "MiniMax", "MiniMax-Text-01", "moe"),
     # ---- generic_gpt fallback family ----
     ("Qwen/Qwen2.5-7B", "通用 Dense", "Qwen2.5-7B", "dense"),
     ("Qwen/Qwen2.5-72B", "通用 Dense", "Qwen2.5-72B", "dense"),
@@ -99,10 +103,35 @@ def divisors_upto(value: int, limit: int = 64) -> list[int]:
     return [d for d in range(1, min(limit, value) + 1) if value % d == 0]
 
 
-def derive_options(raw: dict) -> dict:
-    """Legal TP / PP / EP values for this model, from validate_config's asserts."""
+def normalised_config(raw: dict) -> dict:
+    """The config as the kernel's adapter would read it.
 
-    text = text_config_of(raw)
+    The family adapters rename the fields the kernel looks for — the
+    expert count, the expert FFN width, the attention layout — and the
+    catalog has to be derived from the same view, or it would describe a
+    different model from the one the simulator estimates.
+    """
+    try:
+        from engine import families
+
+        families.register_all()
+        from hcu_train_simulator.models.registry import resolve_model_adapter
+
+        adapter = resolve_model_adapter(raw)
+        return adapter.normalize_config(raw).language
+    except Exception:  # noqa: BLE001
+        return text_config_of(raw)
+
+
+def derive_options(raw: dict) -> dict:
+    """Legal TP / PP / EP values for this model, from validate_config's asserts.
+
+    The values come from the *normalised* config, not the raw one: several
+    families write their expert count under a name the kernel does not read
+    (`num_local_experts` for MiniMax, for instance), so reading the raw
+    file would report a MoE model as dense.
+    """
+    text = normalised_config(raw)
     heads = int(text.get("num_attention_heads") or 0)
     kv_groups = int(text.get("num_key_value_heads") or heads or 0)
     hidden = int(text.get("hidden_size") or 0)
@@ -174,6 +203,12 @@ def main() -> int:
     paths.ensure_dirs()
     paths.bootstrap()
 
+    # Register the family adapters before any config is resolved, so the
+    # catalog records the adapter the simulator will actually use.
+    from engine import families
+
+    families.register_all()
+
     catalog: list[dict] = []
     failures: list[dict] = []
 
@@ -188,10 +223,17 @@ def main() -> int:
 
         print(f"[fetch] {hf_id}", flush=True)
         try:
-            if config_path.exists() and not args.only:
+            if config_path.exists():
                 raw = json.loads(config_path.read_text(encoding="utf-8"))
             else:
-                raw = hf_client.fetch_hf_config(hf_id)
+                # A config captured earlier is reused rather than fetched
+                # again — the network is not always available, and the
+                # captured file is the same file.
+                captured = _captured_config(hf_id)
+                if captured is not None:
+                    raw = captured
+                else:
+                    raw = hf_client.fetch_hf_config(hf_id)
                 config_path.write_text(
                     json.dumps(raw, indent=2, ensure_ascii=False), encoding="utf-8"
                 )
@@ -239,7 +281,15 @@ def main() -> int:
         )
 
     if args.only:
-        existing = json.loads(paths.CATALOG_FILE.read_text(encoding="utf-8")) if paths.CATALOG_FILE.exists() else []
+        # The catalogue file holds {"models": [...]}; an older revision of
+        # this script wrote a bare list, so both shapes are accepted.
+        existing: list = []
+        if paths.CATALOG_FILE.exists():
+            raw_existing = json.loads(paths.CATALOG_FILE.read_text(encoding="utf-8"))
+            if isinstance(raw_existing, dict):
+                existing = raw_existing.get("models") or []
+            else:
+                existing = raw_existing
         merged = {e["slug"]: e for e in existing}
         merged.update({e["slug"]: e for e in catalog})
         catalog = list(merged.values())
@@ -257,8 +307,35 @@ def main() -> int:
     return 0
 
 
+def _captured_config(hf_id: str) -> dict | None:
+    """A config captured earlier, if one is available.
+
+    The model-community and Hugging Face mirrors are not always
+    reachable from the build machine, so a config that was already
+    fetched is reused instead of being downloaded again.
+    """
+    slug = slug_for(hf_id)
+    for path in (
+        paths.APP_ROOT / "tests" / "fixtures" / "model_configs" / f"{slug}.json",
+        paths.APP_ROOT / "runtime" / "probe" / f"{hf_id}" / "config.json",
+    ):
+        if path.exists():
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                continue
+    return None
+
+
 def _resolve_adapter(raw: dict) -> str:
     from hcu_train_simulator.models.registry import resolve_model_adapter
+
+    # The family adapters have to be registered first, or the catalog would
+    # record the generic fallback for models the kernel routes to a family
+    # adapter.
+    from engine import families
+
+    families.register_all()
 
     return resolve_model_adapter(raw).name
 

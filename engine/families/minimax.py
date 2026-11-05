@@ -176,19 +176,15 @@ class MiniMaxFamilyAdapter(ModelAdapter):
 
         # Expert FFN width.
         #
-        # M2 and later state it as `mlp_intermediate_size`, because they
-        # also have a separate dense MLP whose width is `intermediate_size`
-        # — the two numbers differ (8192 against 1536) and substituting one
-        # for the other would be wrong.
-        #
-        # M1 and Text-01 have no dense MLP alongside the experts, so their
-        # `intermediate_size` *is* the expert width and is the right value
-        # to use. Which of the two a config belongs to is decided by which
-        # field it states, not by the model name.
+        # The official MiniMax implementation sizes each expert from
+        # `intermediate_size` — `MiniMaxM2MLP.ffn_dim = config.intermediate_size`
+        # — and the sparse block is the router plus the expert list, with no
+        # separate dense MLP. The released config also carries
+        # `mlp_intermediate_size` (8192), but the official modelling code
+        # never reads it, and using it would inflate the parameter count
+        # five-fold (1201B instead of the published 229.9B).
         if not any(normalised.get(f) is not None for f in MOE_FFN_FIELDS):
-            width = normalised.get("mlp_intermediate_size")
-            if width is None:
-                width = normalised.get("intermediate_size")
+            width = normalised.get("intermediate_size")
             if width is not None:
                 normalised["moe_intermediate_size"] = width
 

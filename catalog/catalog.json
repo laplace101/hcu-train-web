@@ -2810,6 +2810,307 @@
       }
     },
     {
+      "slug": "minimax-m2",
+      "name": "MiniMax-M2",
+      "hf_id": "MiniMaxAI/MiniMax-M2",
+      "family": "MiniMax",
+      "kind": "moe",
+      "config_path": "catalog/models/minimax-m2/config.json",
+      "model_type": "minimax_m2",
+      "has_vision": false,
+      "nested_text_config": false,
+      "num_layers": 62,
+      "hidden_size": 3072,
+      "num_attention_heads": 48,
+      "num_query_groups": 8,
+      "num_experts": 256,
+      "valid_tp": [
+        1,
+        2,
+        4,
+        8
+      ],
+      "valid_pp": [
+        1,
+        2
+      ],
+      "valid_cp": [
+        1,
+        2,
+        4,
+        8
+      ],
+      "suggested_tp": 8,
+      "suggested_pp": 1,
+      "suggested_ep": 1,
+      "adapter": "minimax_family",
+      "verified": true,
+      "params_b": 228.689,
+      "suggested_num_gpus": 72,
+      "valid_ep": [
+        1
+      ],
+      "tp_probe": [
+        {
+          "tp_size": 1,
+          "tgs": 1648.89,
+          "mfu": 0.3303,
+          "iteration_ms": 79491.28,
+          "peak_memory_gib": 1744.13,
+          "fits_in_hbm": false
+        },
+        {
+          "tp_size": 2,
+          "tgs": 1053.54,
+          "mfu": 0.211,
+          "iteration_ms": 124411.35,
+          "peak_memory_gib": 1047.41,
+          "fits_in_hbm": false
+        },
+        {
+          "tp_size": 4,
+          "tgs": 800.55,
+          "mfu": 0.1603,
+          "iteration_ms": 163728.41,
+          "peak_memory_gib": 699.15,
+          "fits_in_hbm": false
+        },
+        {
+          "tp_size": 8,
+          "tgs": 516.8,
+          "mfu": 0.1035,
+          "iteration_ms": 253622.48,
+          "peak_memory_gib": 525.24,
+          "fits_in_hbm": false
+        }
+      ],
+      "baseline": {
+        "seq_length": 4096,
+        "micro_batch_size": 1,
+        "global_batch_size": 256,
+        "num_gpus": 72,
+        "task": "full",
+        "operator_profile": "bw1000",
+        "tp_size": 8,
+        "pp_size": 1,
+        "ep_size": 1
+      },
+      "baseline_result": {
+        "adapter": "minimax_family",
+        "model_size_b": 228.6893,
+        "compute_ms": 7511.63,
+        "communication_ms": 21448.15,
+        "iteration_ms": 28959.78,
+        "tgs": 502.89,
+        "mfu": 0.1007,
+        "peak_memory_gib": 227.13
+      }
+    },
+    {
+      "slug": "minimax-m1",
+      "name": "MiniMax-M1",
+      "hf_id": "MiniMaxAI/MiniMax-M1",
+      "family": "MiniMax",
+      "kind": "moe",
+      "config_path": "catalog/models/minimax-m1/config.json",
+      "model_type": "minimax_m1",
+      "has_vision": false,
+      "nested_text_config": false,
+      "num_layers": 80,
+      "hidden_size": 6144,
+      "num_attention_heads": 64,
+      "num_query_groups": 8,
+      "num_experts": 32,
+      "valid_tp": [
+        1,
+        2,
+        4,
+        8
+      ],
+      "valid_pp": [
+        1,
+        2,
+        4,
+        8
+      ],
+      "valid_cp": [
+        1,
+        2,
+        4,
+        8
+      ],
+      "suggested_tp": 8,
+      "suggested_pp": 1,
+      "suggested_ep": 8,
+      "adapter": "minimax_family",
+      "verified": true,
+      "params_b": 438.976,
+      "suggested_num_gpus": 128,
+      "valid_ep": [
+        8,
+        4,
+        2,
+        1
+      ],
+      "tp_probe": [
+        {
+          "tp_size": 1,
+          "tgs": 942.08,
+          "mfu": 0.3619,
+          "iteration_ms": 139130.15,
+          "peak_memory_gib": 3134.79,
+          "fits_in_hbm": false
+        },
+        {
+          "tp_size": 2,
+          "tgs": 1107.45,
+          "mfu": 0.4254,
+          "iteration_ms": 118354.47,
+          "peak_memory_gib": 1881.64,
+          "fits_in_hbm": false
+        },
+        {
+          "tp_size": 4,
+          "tgs": 991.68,
+          "mfu": 0.3809,
+          "iteration_ms": 132171.69,
+          "peak_memory_gib": 1255.09,
+          "fits_in_hbm": false
+        },
+        {
+          "tp_size": 8,
+          "tgs": 711.04,
+          "mfu": 0.2731,
+          "iteration_ms": 184338.95,
+          "peak_memory_gib": 941.89,
+          "fits_in_hbm": false
+        }
+      ],
+      "baseline": {
+        "seq_length": 4096,
+        "micro_batch_size": 1,
+        "global_batch_size": 256,
+        "num_gpus": 128,
+        "task": "full",
+        "operator_profile": "bw1000",
+        "tp_size": 8,
+        "pp_size": 1,
+        "ep_size": 8
+      },
+      "baseline_result": {
+        "adapter": "minimax_family",
+        "model_size_b": 438.9763,
+        "compute_ms": 2186.0,
+        "communication_ms": 7184.6,
+        "iteration_ms": 9370.6,
+        "tgs": 874.22,
+        "mfu": 0.3358,
+        "peak_memory_gib": 101.04
+      }
+    },
+    {
+      "slug": "minimax-text-01",
+      "name": "MiniMax-Text-01",
+      "hf_id": "MiniMaxAI/MiniMax-Text-01",
+      "family": "MiniMax",
+      "kind": "moe",
+      "config_path": "catalog/models/minimax-text-01/config.json",
+      "model_type": "minimax_text_01",
+      "has_vision": false,
+      "nested_text_config": false,
+      "num_layers": 80,
+      "hidden_size": 6144,
+      "num_attention_heads": 64,
+      "num_query_groups": 8,
+      "num_experts": 32,
+      "valid_tp": [
+        1,
+        2,
+        4,
+        8
+      ],
+      "valid_pp": [
+        1,
+        2,
+        4,
+        8
+      ],
+      "valid_cp": [
+        1,
+        2,
+        4,
+        8
+      ],
+      "suggested_tp": 8,
+      "suggested_pp": 1,
+      "suggested_ep": 8,
+      "adapter": "minimax_family",
+      "verified": true,
+      "params_b": 438.976,
+      "suggested_num_gpus": 128,
+      "valid_ep": [
+        8,
+        4,
+        2,
+        1
+      ],
+      "tp_probe": [
+        {
+          "tp_size": 1,
+          "tgs": 942.08,
+          "mfu": 0.3619,
+          "iteration_ms": 139130.15,
+          "peak_memory_gib": 3134.79,
+          "fits_in_hbm": false
+        },
+        {
+          "tp_size": 2,
+          "tgs": 1107.45,
+          "mfu": 0.4254,
+          "iteration_ms": 118354.47,
+          "peak_memory_gib": 1881.64,
+          "fits_in_hbm": false
+        },
+        {
+          "tp_size": 4,
+          "tgs": 991.68,
+          "mfu": 0.3809,
+          "iteration_ms": 132171.69,
+          "peak_memory_gib": 1255.09,
+          "fits_in_hbm": false
+        },
+        {
+          "tp_size": 8,
+          "tgs": 711.04,
+          "mfu": 0.2731,
+          "iteration_ms": 184338.95,
+          "peak_memory_gib": 941.89,
+          "fits_in_hbm": false
+        }
+      ],
+      "baseline": {
+        "seq_length": 4096,
+        "micro_batch_size": 1,
+        "global_batch_size": 256,
+        "num_gpus": 128,
+        "task": "full",
+        "operator_profile": "bw1000",
+        "tp_size": 8,
+        "pp_size": 1,
+        "ep_size": 8
+      },
+      "baseline_result": {
+        "adapter": "minimax_family",
+        "model_size_b": 438.9763,
+        "compute_ms": 2186.0,
+        "communication_ms": 7184.6,
+        "iteration_ms": 9370.6,
+        "tgs": 874.22,
+        "mfu": 0.3358,
+        "peak_memory_gib": 101.04
+      }
+    },
+    {
       "slug": "qwen2-5-7b",
       "name": "Qwen2.5-7B",
       "hf_id": "Qwen/Qwen2.5-7B",

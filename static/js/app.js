@@ -1285,11 +1285,16 @@ function renderSupportSummary(data) {
     const list = el('div', { class: 'support-families' });
     list.appendChild(el('h4', {}, '系列通用模块'));
     data.family_modules.forEach(module => {
-      list.appendChild(el('div', { class: 'support-family' }, [
+      const entry = el('div', { class: 'support-family' }, [
         el('strong', {}, module.adapter),
         el('span', { class: 'hint' }, module.covers || ''),
         el('span', { class: 'hint' }, module.capability || ''),
-      ]));
+      ]);
+      if (Array.isArray(module.detects) && module.detects.length) {
+        entry.appendChild(el('span', { class: 'hint' },
+          `识别字段：${module.detects.join('、')}`));
+      }
+      list.appendChild(entry);
     });
     box.appendChild(list);
   }

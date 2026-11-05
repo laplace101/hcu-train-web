@@ -190,7 +190,8 @@ LoRA 路径选到的是同一条记录、给出同一个匹配质量。
 
 ### 6.1 模型来源
 
-- **预设模型**：35 个，覆盖 6 个适配器，`config.json` 随仓库保存，离线可用
+- **预设模型**：38 个，覆盖 6 个内核适配器 + 5 个系列通用模块，`config.json`
+  随仓库保存，离线可用
 - **ModelScope**：仓库名或链接，读取 `config.json` 并记录 revision 与配置哈希
 - **HF 链接 / 上传文件 / 粘贴 JSON**
 
@@ -345,13 +346,19 @@ M1 与 Text-01 才是真混合：80 层中 70 层是 Lightning Attention、10 �
 Lightning 不是同一种算子（Lightning 没有 delta rule 的状态更新），所以线性
 层按近似处理，载荷里明确标注。
 
-三者的估算结果：
+**专家 FFN 宽度取 `intermediate_size`，不是 `mlp_intermediate_size`。**
+官方实现里每个专家的 FFN 宽度是 `config.intermediate_size`（1536），
+稀疏块就是路由加专家列表，没有独立的 dense MLP；发布的 config 里的
+`mlp_intermediate_size`（8192）**官方建模代码从不读取**。用错的话参数规模
+会算成 1201B，而不是公布的 229.9B。
 
-| 模型 | 注意力布局 | iteration | 峰值显存 |
-|---|---|---|---|
-| MiniMax-M2 | 62 层全注意力 | 238662.73 ms | 8953.04 GiB |
-| MiniMax-M1 | 70 线性 + 10 全注意力 | 139130.15 ms | 3134.79 GiB |
-| MiniMax-Text-01 | 同 M1 | 139130.15 ms | 3134.79 GiB |
+这是对适配器正确性的强验证：
+
+| 模型 | 参数量（catalog） | 官方公布 | 误差 | 建议卡数 |
+|---|---|---|---|---|
+| MiniMax-M2 | 228.689 B | 229.9 B | **0.5%** | 72 |
+| MiniMax-M1 | 438.976 B | — | — | 128 |
+| MiniMax-Text-01 | 438.976 B | — | — | 128 |
 
 M2 之前的估算把 256 个专家当成一个稠密 FFN，峰值显存 67.48 GiB——比实际
 **小 132 倍**。
@@ -441,17 +448,14 @@ python tools/probe_model_support.py                  # 批量探测各系列模�
     GLM-5 全系列。Kimi-K2 的架构声明就是 `DeepseekV3ForCausalLM`，
     走 `deepseek_v3` 适配器。
   - **可估算（近似值）**：Qwen2.5、Llama、Mistral、Phi、Gemma 等标准稠密解码器
-    （走 `generic_gpt`），以及 GLM-4.5。
+    （走 `generic_gpt`），以及 GLM-4.5。FP8 发布的 DeepSeek 系列同样标为
+    近似值——内核按 bf16 建模，显存与算力都偏高。
   - **不可估算**：
-    - DeepSeek-V3.2 及以后——含 DSA 索引注意力，内核只有 `glm5` 适配器会
-      应用 `index_*` 字段
     - DeepSeek-V4.1-Flash-1017——多模态视觉塔 + 缺 MLA 字段 + 缺 MoE 层分布
       参数 + DSA / candidate / dspark / engram 结构
     - GLM-4.6V-Flash——多模态视觉塔
-    - MiniMax 全系（M2 / M1 / Text-01）——专家数写在 `num_local_experts`，
-      内核只读 `num_experts` 与 `n_routed_experts`，会当成稠密模型算，
-      显存与算力被大幅低估；另有 `attn_type_list`（Lightning 混合注意力）
-      与 `use_mtp` 无对应建模
+    - DeepSeek-V3.2 及以后已由 `deepseek_family` 适配器覆盖（DSA 稀疏注意力
+      已在该适配器中建模），从「不可估算」转为「可估算（近似值）」
   - 兼容性门禁在估算**之前**拦截。这很重要：DeepSeek-V3.2 若直接调内核，
     它照样能算出数，而且与 DeepSeek-V3 的结果完全一致——那是个看着正常、
     实际失真的数字。

@@ -111,11 +111,15 @@ def main() -> int:
     minimax = support_matrix.check_reference(
         "minimax-m2") if _has_preset("minimax-m2") else None
     if minimax is not None:
-        check("MiniMax 判为不可估算", minimax.status == "not_estimable",
+        # MiniMax is estimable, but the parts the kernel only approximates
+        # (the Lightning layers of M1/Text-01, the FP8 weights, the sigmoid
+        # router) are reported rather than hidden.
+        check("MiniMax 可估算", minimax.status in {"estimable", "approximate"},
               minimax.status)
-        check("列出原因", len(minimax.reasons) > 0,
-              minimax.reasons[0][:60] if minimax.reasons else "")
-        check("给出建议", len(minimax.suggestions) > 0)
+        check("MiniMax 标为近似", minimax.status == "approximate",
+              minimax.status)
+        check("列出近似原因", len(minimax.warnings) > 0,
+              minimax.warnings[0][:60] if minimax.warnings else "")
     else:
         # No MiniMax preset in the catalogue — check a model that does not
         # exist, which must still be refused with a reason.
