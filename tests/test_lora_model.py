@@ -58,8 +58,8 @@ def main() -> int:
     print("\n=== 逐点重现实测 ===")
     conn = measured_repo._connect()
     rows = [dict(r) for r in conn.execute(
-        "SELECT model, gpu_count, bs, cutoff_len, ds_config, liger, step_time_s, "
-        "tokens_per_s, peak_mem_mib FROM v_train_bench "
+        "SELECT model, gpu_count, bs, grad_accum, cutoff_len, ds_config, liger, "
+        "step_time_s, tokens_per_s, peak_mem_mib FROM v_train_bench "
         "WHERE status='OK' AND step_time_s IS NOT NULL AND tokens_per_s IS NOT NULL"
     )]
     conn.close()
@@ -74,16 +74,27 @@ def main() -> int:
             slug=slug, num_gpus=row["gpu_count"], micro_batch_size=row["bs"],
             seq_length=row["cutoff_len"], ds_config=str(row["ds_config"] or "none"),
             liger=int(row["liger"] or 0), calibration=cal,
+            # The measured row's own accumulation factor, so the step time
+            # being compared is the same one.
+            grad_accum=int(row.get("grad_accum") or 1),
         )
         conf = (est.get("throughput_confidence") or {}).get("confidence", "?")
         # Compare against the same reference the model uses: the step time
         # derived from the measured throughput. The stored `step_time_s`
         # column is inconsistent across ingestion runs, which is why the
         # calibration derives its own.
+        # Compare against the same reference the model uses: the time of
+        # one training step, derived from the measured throughput. The
+        # stored `step_time_s` column is inconsistent across ingestion
+        # runs, which is why the calibration derives its own.
+        #
+        # `tokens_per_s` is the per-card throughput, so a micro-step takes
+        # bs × seq / tokens_per_s seconds and a training step (grad_accum
+        # micro-steps) takes that many times over.
         reference = row["step_time_s"]
         if row.get("tokens_per_s") and row.get("bs") and row.get("cutoff_len"):
-            reference = (row["bs"] * row["cutoff_len"] * (row["gpu_count"] or 1)
-                         / row["tokens_per_s"])
+            micro_step = (row["bs"] * row["cutoff_len"] / row["tokens_per_s"])
+            reference = micro_step * (row.get("grad_accum") or 1)
         step_err = (est["step_time_s"] - reference) / reference * 100
         mem_err = (est["peak_gib"] - row["peak_mem_mib"] / 1024) / (row["peak_mem_mib"] / 1024) * 100
         buckets.setdefault(conf, []).append((step_err, mem_err, row))

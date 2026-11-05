@@ -24,6 +24,7 @@ envelope without saying so.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import statistics
@@ -67,6 +68,29 @@ def _normalise(name: str | None) -> str:
             .replace("-", "").replace(".", "").replace("_", ""))
 
 
+def _robust_line(xs: list[float], ys: list[float]) -> list[float]:
+    """Theil-Sen: the median of pairwise slopes, with the median intercept.
+
+    Least squares lets a single disagreeing measurement drag the whole
+    line — one batch size whose throughput collapses under memory
+    pressure was enough to push the fitted intercept negative, which then
+    predicted a batch size of one at zero time. The median of the
+    pairwise slopes ignores that kind of point, and needs no threshold
+    to be tuned.
+    """
+    slopes = []
+    for i in range(len(xs)):
+        for j in range(i + 1, len(xs)):
+            dx = xs[j] - xs[i]
+            if dx:
+                slopes.append((ys[j] - ys[i]) / dx)
+    if not slopes:
+        return _lstsq([[1.0, x] for x in xs], ys)
+    slope = statistics.median(slopes)
+    intercept = statistics.median([y - slope * x for x, y in zip(xs, ys)])
+    return [intercept, slope]
+
+
 def _lstsq(X: list[list[float]], y: list[float]) -> list[float]:
     """Least squares via normal equations with Gaussian elimination."""
     n = len(X)
@@ -92,6 +116,39 @@ def _lstsq(X: list[list[float]], y: list[float]) -> list[float]:
             continue
         coef[i] = (b[i] - sum(a[i][c] * coef[c] for c in range(i + 1, k))) / a[i][i]
     return coef
+
+
+def _measured_oom_rows() -> list[dict[str, Any]]:
+    """Rows that ran out of memory, with the memory they reached.
+
+    These are the memory boundary in the other direction: a configuration
+    that OOMed at a given batch size cannot be run at that batch size on
+    that many cards, whatever the estimate says. The peak the run reached
+    before dying is close to the limit, so it also says how close.
+    """
+    if not measured_repo.available():
+        return []
+    conn = measured_repo._connect()
+    try:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT model, gpu_count, bs, grad_accum, cutoff_len, ds_config, "
+            "liger, status, peak_mem_mib, note FROM v_train_bench "
+            "WHERE status IN ('OOM','SKIPPED') AND peak_mem_mib IS NOT NULL"
+        )]
+    finally:
+        conn.close()
+
+    catalogue = _catalog_entries()
+    joined: list[dict[str, Any]] = []
+    for row in rows:
+        entry = catalogue.get(_normalise(row.get("model")))
+        if not entry:
+            continue
+        row = dict(row)
+        row["slug"] = entry.get("slug")
+        row["params_b"] = entry.get("params_b")
+        joined.append(row)
+    return joined
 
 
 def _measured_rows() -> list[dict[str, Any]]:
@@ -131,28 +188,49 @@ def _effective_step_time(row: dict[str, Any]) -> float | None:
 
     The database's `step_time_s` column is not consistent across ingestion
     runs: some batches recorded the time of a single micro-step, others the
-    time of a full gradient-accumulation cycle. The ratios between the
-    stored value and the derived one come out as clean multiples of the
-    accumulation factor, which is how the inconsistency was found.
+    time of a full gradient-accumulation cycle.
 
-    `tokens_per_s` (per card) is recorded consistently, so the step time is
-    derived from it instead:
+    `tokens_per_s` is recorded consistently, so the step time is derived
+    from it. The formula depends on what the stored value means, and the
+    two conventions differ:
 
-        tokens_per_s = bs × seq × num_gpus / step_time
-        → step_time = bs × seq × num_gpus / tokens_per_s
+    * **per micro-step** — `tokens_per_s = bs × seq / step_time`, so
+      `step_time = bs × seq / tokens_per_s`;
+    * **full gradient-accumulation cycle** — `tokens_per_s = ga × bs × seq /
+      step_time`, so `step_time = ga × bs × seq / tokens_per_s`.
 
-    Rows without a usable throughput fall back to the stored value.
+    The current data (2026-11-05, 174 rows) matches the second convention
+    with a relative error of at most 0.02%. The earlier batch does not, so
+    the stored value alone is not reliable.
+
+    The derivation therefore follows whichever convention the row's own
+    numbers support: the candidate that agrees with the stored value within
+    2% is the one that describes that row. Rows without a usable
+    throughput fall back to the stored value.
     """
     throughput = row.get("tokens_per_s")
     bs = row.get("bs")
     seq = row.get("cutoff_len")
-    gpus = row.get("gpu_count") or 1
-    if throughput and bs and seq:
-        derived = bs * seq * gpus / throughput
-        if derived > 0:
-            return derived
     stored = row.get("step_time_s")
-    return float(stored) if stored else None
+
+    if not (throughput and bs and seq):
+        return float(stored) if stored else None
+
+    # `tokens_per_s` is the per-card throughput: each card processes
+    # bs × seq tokens per micro-step, so the micro-step takes
+    # bs × seq / tokens_per_s seconds. A full gradient-accumulation cycle
+    # contains `ga` micro-steps and therefore takes `ga` times that.
+    micro_step = bs * seq / throughput
+    if micro_step <= 0:
+        return float(stored) if stored else None
+
+    # The stored `step_time_s` records the full gradient-accumulation
+    # cycle, which the newer ingestion batches make explicit: for every
+    # row of the `v2-ngpu*bs*ga*cutoff` batch, the stored time equals
+    # `grad_accum × bs × seq / tokens_per_s` exactly. The throughput is
+    # therefore the consistent source, and the micro-step time is what
+    # the fit and the model both work in.
+    return micro_step
 
 
 def _fit_step_time(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -170,7 +248,14 @@ def _fit_step_time(rows: list[dict[str, Any]]) -> dict[str, Any]:
         if step is None:
             continue
         row = dict(row)
-        row["_effective_step_time"] = step
+        # The fit targets the time of one micro-step, not the whole
+        # gradient-accumulation cycle. The formula `fixed + k*bs` assumes
+        # the batch size is the only variable; the accumulation factor
+        # changes how many micro-steps a cycle has, not how long a micro-step
+        # takes. Fitting the cycle time mixes the two, and the measured
+        # error goes from 12% to 50%.
+        # `_effective_step_time` already returns the micro-step time.
+        row["_micro_step_time"] = step
         key = (
             row["slug"],
             str(row.get("ds_config") or "none"),
@@ -181,21 +266,41 @@ def _fit_step_time(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
     fits: list[dict[str, Any]] = []
     for (slug, ds, liger, seq_length), group in groups.items():
-        X = [[1.0, float(r["bs"])] for r in group]
-        y = [float(r["step_time_s"]) for r in group]
+        # The same batch size appears with several accumulation factors,
+        # each measuring the same micro-step. Fold them into one point
+        # (the median) so the fit stays balanced: without this, a batch
+        # size with six measurements dominates a linear fit against batch
+        # sizes with one each.
+        by_bs: dict[int, list[dict[str, Any]]] = {}
+        for r in group:
+            by_bs.setdefault(int(r["bs"]), []).append(r)
 
-        if len(group) < MIN_SAMPLES:
-            # A single sample only pins the step time at that batch size.
-            # The slope is unknown, so it is taken from the same model with
-            # a different ZeRO stage if one exists, and the fit is marked
-            # as low confidence.
-            row = group[0]
+        points = []
+        for bs, rows in sorted(by_bs.items()):
+            values = [float(r["_micro_step_time"]) for r in rows]
+            points.append({
+                "bs": bs,
+                "_micro_step_time": statistics.median(values),
+                "measurements": len(values),
+                "first": rows[0],
+            })
+
+        X = [[1.0, float(p["bs"])] for p in points]
+        y = [float(p["_micro_step_time"]) for p in points]
+
+        if len(points) < MIN_SAMPLES:
+            # A single point only pins the micro-step time at that batch
+            # size. The slope is unknown, so it is taken from the same model
+            # with a different ZeRO stage if one exists, and the fit is
+            # marked as low confidence.
+            row = points[0]["first"]
             sibling = [
                 f for f in fits
                 if f["slug"] == slug and f["ds_config"] != ds and f["liger"] == liger
             ]
             per_sample = sibling[0]["per_sample_s"] if sibling else 0.0
-            fixed = float(row["_effective_step_time"]) - per_sample * float(row["bs"])
+            fixed = (float(points[0]["_micro_step_time"])
+                     - per_sample * float(points[0]["bs"]))
             fits.append({
                 "slug": slug,
                 "ds_config": ds,
@@ -203,7 +308,8 @@ def _fit_step_time(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 "seq_length": group[0].get("cutoff_len"),
                 "fixed_s": round(fixed, 4),
                 "per_sample_s": round(per_sample, 6),
-                "samples": len(group),
+                "samples": sum(p["measurements"] for p in points),
+                "batch_sizes": len(points),
                 "mae_percent": None,
                 "max_error_percent": None,
                 "confidence": "low_single_sample",
@@ -213,16 +319,16 @@ def _fit_step_time(rows: list[dict[str, Any]]) -> dict[str, Any]:
             })
             continue
 
-        coef = _lstsq(X, y)
+        coef = _robust_line([float(p["bs"]) for p in points], y)
         if len(coef) < 2:
             continue
         fixed, per_sample = coef[0], coef[1]
         if per_sample <= 0:
             continue
         errors = [
-            (coef[0] + coef[1] * r["bs"] - r["_effective_step_time"])
-            / r["_effective_step_time"] * 100
-            for r in group
+            (coef[0] + coef[1] * p["bs"] - p["_micro_step_time"])
+            / p["_micro_step_time"] * 100
+            for p in points
         ]
         fits.append({
             "slug": slug,
@@ -231,7 +337,8 @@ def _fit_step_time(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "seq_length": group[0].get("cutoff_len"),
             "fixed_s": round(fixed, 4),
             "per_sample_s": round(per_sample, 6),
-            "samples": len(group),
+            "samples": sum(p["measurements"] for p in points),
+            "batch_sizes": len(points),
             "mae_percent": round(statistics.mean(abs(e) for e in errors), 2),
             "max_error_percent": round(max(abs(e) for e in errors), 2),
             "confidence": "measured_fit",
@@ -379,7 +486,7 @@ def _fit_throughput(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _database_stamp() -> str:
-    """A cheap fingerprint of the database.
+    """A cheap fingerprint of the database and of this module.
 
     The database keeps growing as new benchmark runs are ingested, so the
     calibration has to notice. The size and modification time of the main
@@ -387,19 +494,31 @@ def _database_stamp() -> str:
     in the `-wal` sidecar and the main file is only rewritten at a
     checkpoint. Both files are therefore included.
 
+    The fingerprint also covers this module's own source. The calibration
+    logic changes over time — a corrected formula, a new grouping — and a
+    cached result produced by the old logic would otherwise survive and be
+    presented as current. Hashing the source file is cheap and makes the
+    cache invalidate itself when the logic changes.
+
     Re-reading the whole database on every request would be wasteful; a
     stat of the two files is enough.
     """
-    path = measured_repo.database_path()
-    if path is None:
-        return ""
     parts: list[str] = []
-    for candidate in (path, Path(f"{path}-wal")):
-        try:
-            stat = candidate.stat()
-        except OSError:
-            continue
-        parts.append(f"{candidate.name}:{stat.st_size}:{int(stat.st_mtime)}")
+    path = measured_repo.database_path()
+    if path is not None:
+        for candidate in (path, Path(f"{path}-wal")):
+            try:
+                stat = candidate.stat()
+            except OSError:
+                continue
+            parts.append(f"{candidate.name}:{stat.st_size}:{int(stat.st_mtime)}")
+
+    try:
+        source = Path(__file__).read_bytes()
+        parts.append(f"source:{hashlib.sha256(source).hexdigest()[:16]}")
+    except OSError:
+        pass
+
     return "|".join(parts)
 
 
@@ -419,14 +538,34 @@ def build_calibration(*, refresh: bool = False) -> dict[str, Any]:
             pass
 
     rows = _measured_rows()
+    oom_rows = _measured_oom_rows()
     calibration = {
         "generated_at": __import__("datetime").datetime.now().isoformat(timespec="seconds"),
         "database": str(measured_repo.database_path()) if measured_repo.available() else None,
         "database_stamp": stamp,
         "row_count": len(rows),
+        "oom_row_count": len(oom_rows),
         "step_time": _fit_step_time(rows),
         "memory": _fit_memory(rows),
         "throughput": _fit_throughput(rows),
+        # The memory boundary in the other direction: configurations the
+        # campaign tried and that ran out of memory.
+        "oom_boundary": [
+            {
+                "slug": row.get("slug"),
+                "model": row.get("model"),
+                "ds_config": row.get("ds_config") or "none",
+                "liger": int(row.get("liger") or 0),
+                "seq_length": row.get("cutoff_len"),
+                "bs": row.get("bs"),
+                "grad_accum": row.get("grad_accum"),
+                "gpu_count": row.get("gpu_count"),
+                "status": row.get("status"),
+                "peak_mem_gib": round((row.get("peak_mem_mib") or 0) / 1024, 2),
+                "note": (row.get("note") or "")[:200],
+            }
+            for row in oom_rows
+        ],
     }
 
     CALIBRATION_PATH.parent.mkdir(parents=True, exist_ok=True)

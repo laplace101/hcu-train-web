@@ -82,7 +82,31 @@ def _catalog_entry(slug: str | None) -> dict[str, Any] | None:
     return None
 
 
-def _measured_group(slug: str, ds_config: str, liger: int) -> list[dict[str, Any]]:
+def _measured_oom(slug, ds_config, liger, seq_length, micro_batch_size,
+                  num_gpus):
+    """A measured out-of-memory run for this exact configuration.
+
+    Returns the row when the campaign tried this configuration and it ran
+    out of memory, otherwise None.
+    """
+    for row in calibration_module._measured_oom_rows():
+        if row.get("slug") != slug:
+            continue
+        if str(row.get("ds_config") or "none") != str(ds_config or "none"):
+            continue
+        if int(row.get("liger") or 0) != int(liger or 0):
+            continue
+        if int(row.get("cutoff_len") or 0) != int(seq_length or 0):
+            continue
+        if int(row.get("bs") or 0) != int(micro_batch_size or 0):
+            continue
+        if int(row.get("gpu_count") or 0) != int(num_gpus or 0):
+            continue
+        return row
+    return None
+
+
+def _measured_group(slug, ds_config, liger: int) -> list[dict[str, Any]]:
     """Measured rows for one (model, ZeRO stage, Liger) combination."""
     if not measured_repo.available():
         return []
@@ -179,6 +203,12 @@ def estimate_lora(
     hidden = entry.get("hidden_size") or 0
     group = _measured_group(slug, ds_config, liger)
 
+    # A configuration that ran out of memory in the measurement campaign
+    # cannot run, whatever the estimate says. The row is looked up rather
+    # than estimated, so it is a fact about this configuration.
+    oom = _measured_oom(slug, ds_config, liger, seq_length, micro_batch_size,
+                         num_gpus)
+
     # ---- throughput -------------------------------------------------
     fit = calibration_module.step_time_fit(cal, slug, ds_config, liger, seq_length)
     fit_source = "measured_fit"
@@ -190,7 +220,11 @@ def estimate_lora(
     step_time_s = None
     throughput_confidence = None
     if fit is not None:
-        step_time_s = fit["fixed_s"] + fit["per_sample_s"] * micro_batch_size
+        # The fit is over the time of one micro-step. A training step
+        # consists of `grad_accum` micro-steps, so the reported step time
+        # is that many micro-steps.
+        micro_step_s = fit["fixed_s"] + fit["per_sample_s"] * micro_batch_size
+        step_time_s = micro_step_s * max(1, int(grad_accum or 1))
         throughput_confidence = {
             "mae_percent": fit.get("mae_percent"),
             "max_error_percent": fit.get("max_error_percent"),
@@ -207,8 +241,12 @@ def estimate_lora(
     tokens_per_s_total = None
     tokens_per_s = None
     if step_time_s:
-        tokens_per_s_total = micro_batch_size * seq_length * num_gpus / step_time_s
-        tokens_per_s = tokens_per_s_total / num_gpus
+        # Per-card throughput: each card processes bs × seq tokens per
+        # micro-step, and a step contains `grad_accum` micro-steps.
+        tokens_per_s = micro_batch_size * seq_length / (
+            step_time_s / max(1, int(grad_accum or 1))
+        )
+        tokens_per_s_total = tokens_per_s * num_gpus
 
     # ---- memory -----------------------------------------------------
     memory_source = "measured_interpolation"
@@ -219,14 +257,23 @@ def estimate_lora(
     usable = same_seq or [r for r in group if r.get("peak_mem_mib")]
 
     if usable:
-        bss = [r["bs"] for r in usable]
-        peaks = [r["peak_mem_mib"] / 1024 for r in usable]
+        # The same batch size can appear with several accumulation factors
+        # and several sequence lengths. Those rows measure different things,
+        # so they cannot be treated as one point: `_interpolate` would
+        # order them by x and read the wrong y. Fold each batch size to a
+        # single value (the median) before interpolating.
+        by_bs: dict[int, list[float]] = {}
+        for r in usable:
+            by_bs.setdefault(int(r["bs"]), []).append(r["peak_mem_mib"] / 1024)
+        bss = sorted(by_bs)
+        peaks = [statistics.median(by_bs[bs]) for bs in bss]
         measured_gpus = usable[0].get("gpu_count")
         try:
-            peak_gib, how = _interpolate(bss, peaks, micro_batch_size)
+            peak_gib, how = _interpolate([float(b) for b in bss], peaks, float(micro_batch_size))
             memory_source = how if how.startswith("measured") else f"measured_{how}"
             memory_confidence = {
                 "samples": len(usable),
+                "batch_sizes": len(bss),
                 "measured_bs_range": [min(bss), max(bss)],
                 "requested_bs": micro_batch_size,
                 "seq_match": bool(same_seq),
@@ -309,6 +356,18 @@ def estimate_lora(
         "measured_rows": len(group),
         "calibration_at": cal.get("generated_at"),
         "measured_source": cal.get("database"),
+
+        # a measured out-of-memory run for this exact configuration
+        "measured_oom": bool(oom),
+        "oom_evidence": (
+            {
+                "status": oom.get("status"),
+                "peak_mem_gib": round((oom.get("peak_mem_mib") or 0) / 1024, 2),
+                "gpu_count": oom.get("gpu_count"),
+                "note": (oom.get("note") or "")[:200],
+            }
+            if oom else None
+        ),
     }
 
 
@@ -452,6 +511,12 @@ def three_plans(
         raise LoraNotSupported("没有可评估的 LoRA 配置")
 
     feasible = [e for e in evaluations if e["fits"]] or evaluations
+
+    # A configuration the campaign measured as out of memory is not a
+    # candidate, however attractive its estimate looks.
+    runnable = [e for e in feasible if not e.get("measured_oom")]
+    if runnable:
+        feasible = runnable
 
     minimum = min(feasible, key=lambda e: (e["num_gpus"], e["micro_batch_size"]))
 
