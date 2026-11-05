@@ -648,7 +648,19 @@ function updateEpHint() {
     field.value = 1;
     return;
   }
-  node.textContent = `ETP=${tp}·可选 ${options.join('/')}`;
+
+  // Say *why* the list is short. Expert parallelism has to divide the
+  // data-parallel size and the expert count at the same time, so a
+  // cluster whose DP size has few factors ends up with EP=1 and the
+  // experts replicated across every group.
+  const dp = Math.floor(numGpus / (tp * pp));
+  let hint = `ETP=${tp}·可选 ${options.join('/')}`;
+  if (options.length === 1 && options[0] === 1 && dp > 1) {
+    hint += `（DP=${dp} 的因子少，EP 只能为 1，${experts} 个专家在每组内复制）`;
+  } else if (options.length === 1 && options[0] === 1) {
+    hint += `（DP=${dp}，EP 只能为 1）`;
+  }
+  node.textContent = hint;
   node.className = 'field__hint';
   const current = Number(field.value || 1);
   if (!options.includes(current)) field.value = options[0];

@@ -85,6 +85,9 @@ const FIXTURES = {
     models: Array.from({ length: 35 }, (_, i) => ({
       slug: i === 0 ? 'qwen3-8b' : `model-${i}`, name: `Model ${i}`,
       family: 'qwen', verified: i < 20,
+      // The first model is a MoE one so the expert-parallel hint can be
+      // exercised; the rest are dense.
+      num_experts: i === 1 ? 256 : null,
       adapter: 'qwen3', baseline: { num_gpus: 8, tp_size: 1, pp_size: 1,
         micro_batch_size: 1, global_batch_size: 256, seq_length: 4096,
         operator_profile: 'bw1000', task: 'full' },
@@ -624,7 +627,38 @@ async function main() {
   await new Promise(r => setTimeout(r, 300));
   check('成功后清空错误区', errCard.hidden);
 
-  console.log('\n=== ⑳ 模型支持矩阵 ===');
+  console.log('\n=== ⑳ EP 选项为何受限 ===');
+  // Expert parallelism must divide both the data-parallel size and the
+  // expert count. A cluster whose DP size has few factors ends up with
+  // EP=1, and the interface has to say why.
+  const epHint = doc.querySelector('#h-ep_size');
+  // Pick the MoE preset so expert parallelism applies.
+  const modelSelect = doc.querySelector('#model-select');
+  if (modelSelect) {
+    const moe = Array.from(modelSelect.options).find(o => o.value === 'model-1');
+    if (moe) {
+      modelSelect.value = 'model-1';
+      modelSelect.dispatchEvent(new window.Event('change', { bubbles: true }));
+      await new Promise(r => setTimeout(r, 100));
+    }
+  }
+  if (epHint) {
+    const numGpus = doc.querySelector('#p-num_gpus');
+    const tp = doc.querySelector('#p-tp_size');
+    const pp = doc.querySelector('#p-pp_size');
+    if (numGpus && tp && pp) {
+      numGpus.value = '72';
+      tp.value = '8';
+      pp.value = '1';
+      tp.dispatchEvent(new window.Event('input', { bubbles: true }));
+      await new Promise(r => setTimeout(r, 100));
+      check('说明 EP 只能为 1 的原因',
+        epHint.textContent.includes('DP=') || epHint.textContent.includes('可选'),
+        epHint.textContent.slice(0, 70));
+    }
+  }
+
+  console.log('\n=== ㉑ 模型支持矩阵 ===');
   const supportBox = doc.querySelector('#support-box');
   const supportSummary = doc.querySelector('#support-summary');
   const supportFamily = doc.querySelector('#support-family');
