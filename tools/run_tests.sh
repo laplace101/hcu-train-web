@@ -64,6 +64,14 @@ if [ "${SKIP_BASELINE:-0}" != "1" ]; then
   run "35/35 精度基线"    "$PY" verification/verify_accuracy.py
 fi
 
+# The preset-solvability check drives one full solve per model, so it takes
+# minutes rather than seconds. It is a separate script rather than part of
+# the routine suite:
+#
+#   python tests/test_presets_solvable.py
+#
+# Run it after changing the catalogue or the parallel-strategy derivation.
+
 echo ""
 echo "══════════════════════════════════════════════"
 if [ "$FAILED" -eq 0 ]; then

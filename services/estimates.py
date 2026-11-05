@@ -134,6 +134,47 @@ def model_facts(config: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def align_global_batch(
+    scenario: TrainingScenario,
+) -> tuple[TrainingScenario, str | None]:
+    """Make the global batch size divisible by MBS × DP.
+
+    `GBS = MBS × DP × grad_accum` — the gradient accumulation has to be a
+    whole number of steps. A preset carries the card count it was
+    published with, and the batch size that was current then; when the two
+    disagree the estimate is impossible, and the user sees a divisibility
+    error that looks like their mistake.
+
+    The batch size is moved to the nearest legal multiple — the one
+    closest to the requested value, and the larger one on a tie, so the
+    effective batch stays at or above what was asked for.
+
+    Returns the adjusted scenario and a note describing the change, or the
+    original scenario and `None` when nothing had to change.
+    """
+    plan = scenario.parallel
+    divisor = plan.micro_batch_size * plan.dp_size
+    if not divisor or plan.global_batch_size % divisor == 0:
+        return scenario, None
+
+    preferred = plan.global_batch_size
+    lower = (preferred // divisor) * divisor
+    upper = lower + divisor
+    aligned = lower if (preferred - lower) < (upper - preferred) else upper
+    if aligned <= 0:
+        return scenario, None
+
+    adjusted = replace(
+        scenario,
+        parallel=replace(plan, global_batch_size=aligned),
+    )
+    return adjusted, (
+        f"全局批量 {preferred} 不能被 MBS({plan.micro_batch_size}) × "
+        f"DP({plan.dp_size}) = {divisor} 整除，已调整为 {aligned}，"
+        "使梯度累积步数为整数"
+    )
+
+
 def build_simulator_config(
     scenario: TrainingScenario,
     hardware_id: str,
@@ -727,6 +768,17 @@ def estimate(
 
     facts = model_facts(model_config or load_model_facts(scenario.model_slug, config_path))
 
+    # The global batch size has to be a whole number of gradient-accumulation
+    # steps: `GBS = MBS × DP × grad_accum`. A preset carries the card count
+    # it was published with, and the batch size that was current then; once
+    # the cluster shape changes, the two can disagree — 256 is not a
+    # multiple of the data-parallel size 9 that 72 cards with TP=8 give.
+    #
+    # That is a recoverable inconsistency rather than a wrong request, so it
+    # is corrected here and the correction is reported. Every other illegal
+    # combination is still refused.
+    scenario, batch_note = align_global_batch(scenario)
+
     issues = validate_scenario(scenario, facts, gpus_per_node=hardware.gpus_per_node)
     if has_errors(issues):
         raise ScenarioRejected(
@@ -787,6 +839,10 @@ def estimate(
         "model": facts,
         "plans": plans,
         "issues": [i.to_dict() for i in issues],
+        # Set when the global batch size had to be moved to a legal
+        # multiple. The user asked for a specific value, so the change is
+        # reported rather than applied silently.
+        "adjustments": [batch_note] if batch_note else [],
         "simulator_version": adapter.simulator_version(),
         "elapsed_ms": round((time.time() - started) * 1000, 1),
     }

@@ -584,11 +584,41 @@ function applyModelDefaults(model) {
   if (model.suggested_ep) $('#p-ep_size').value = model.suggested_ep;
   if (model.suggested_num_gpus) $('#p-num_gpus').value = model.suggested_num_gpus;
   if (model.baseline) {
-    $('#p-global_batch_size').value = model.baseline.global_batch_size;
     $('#p-seq_length').value = model.baseline.seq_length;
     $('#p-micro_batch_size').value = model.baseline.micro_batch_size;
+    $('#p-global_batch_size').value = nearestValidGlobalBatch(
+      model.baseline.global_batch_size);
   }
   updateFieldHints(model);
+}
+
+// The global batch size has to be a whole number of gradient-accumulation
+// steps: `GBS = MBS × DP × grad_accum`. The catalogue's batch size was
+// chosen for the layout that was current when the model was published, and
+// the preset brings its own card count — so the two can disagree. A model
+// on 72 cards with TP=8 has a data-parallel size of 9, and 256 is not a
+// multiple of 9, which makes the estimate impossible.
+//
+// Rounding to the nearest legal multiple keeps the batch size close to the
+// published one and makes the gradient accumulation an integer.
+function nearestValidGlobalBatch(preferred) {
+  const numGpus = Number($('#p-num_gpus').value || 8);
+  const tp = Number($('#p-tp_size').value || 1);
+  const pp = Number($('#p-pp_size').value || 1);
+  const mbs = Number($('#p-micro_batch_size').value || 1);
+  if (!numGpus || !tp || !pp || !mbs) return preferred;
+
+  if (numGpus % (tp * pp) !== 0) return preferred;
+  const divisor = mbs * (numGpus / (tp * pp));
+  if (!divisor || preferred % divisor === 0) return preferred;
+
+  const lower = Math.floor(preferred / divisor) * divisor;
+  const upper = lower + divisor;
+  // Prefer the value closest to the published batch size; on a tie take
+  // the larger one, which keeps the effective batch size at or above the
+  // published value.
+  const nearest = (preferred - lower) < (upper - preferred) ? lower : upper;
+  return nearest > 0 ? nearest : preferred;
 }
 
 function currentNumExperts() {
@@ -606,6 +636,17 @@ function validEpOptions(numGpus, tp, pp, numExperts) {
   let options = [8, 4, 2, 1].filter(ep => limit % ep === 0);
   if (numExperts) options = options.filter(ep => numExperts % ep === 0);
   return options;
+}
+
+// Keep the global batch size divisible by MBS × DP after the cluster
+// shape changes.
+function alignGlobalBatch() {
+  const field = $('#p-global_batch_size');
+  if (!field) return;
+  const current = Number(field.value || 0);
+  if (!current) return;
+  const aligned = nearestValidGlobalBatch(current);
+  if (aligned !== current) field.value = aligned;
 }
 
 function updateFieldHints(model) {
@@ -1983,8 +2024,21 @@ function bindEvents() {
   $('#btn-render-launch')?.addEventListener('click', renderLaunch);
 
   $('#profile-select').addEventListener('change', updateProfileNote);
-  ['p-num_gpus', 'p-tp_size', 'p-pp_size', 'p-cp_size', 'p-micro_batch_size', 'p-global_batch_size']
-    .forEach(id => $(`#${id}`).addEventListener('input', () => { updateEpHint(); updateDerived(); updateDataDerived(); }));
+  // Changing the cluster shape changes the data-parallel size, which can
+  // leave the global batch size indivisible by it. The batch size is
+  // corrected here so the estimate stays possible; the field still holds
+  // whatever the user typed if it was already legal.
+  ['p-num_gpus', 'p-tp_size', 'p-pp_size', 'p-cp_size', 'p-micro_batch_size']
+    .forEach(id => $(`#${id}`).addEventListener('input', () => {
+      alignGlobalBatch();
+      updateEpHint();
+      updateDerived();
+      updateDataDerived();
+    }));
+  $('#p-global_batch_size').addEventListener('input', () => {
+    updateDerived();
+    updateDataDerived();
+  });
 }
 
 document.addEventListener('DOMContentLoaded', init);
