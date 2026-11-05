@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sys
 from pathlib import Path
 
@@ -199,6 +200,30 @@ def main() -> int:
     parser.add_argument("--skip-verify", action="store_true")
     args = parser.parse_args()
 
+    net.apply_proxy()
+    paths.ensure_dirs()
+    paths.bootstrap()
+
+    # Two builds writing the catalogue at the same time would overwrite
+    # each other's entries — and the slower one would win, which is how a
+    # stale value survives a rebuild. The lock makes that impossible.
+    lock_path = paths.APP_ROOT / "runtime" / "build_catalog.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        print("另一个 catalog 构建正在进行，退出。"
+              "若确认没有构建在跑，删除 runtime/build_catalog.lock 后重试。")
+        return 1
+    try:
+        os.write(lock_fd, str(os.getpid()).encode())
+        os.close(lock_fd)
+        return _run(args)
+    finally:
+        lock_path.unlink(missing_ok=True)
+
+
+def _run(args) -> int:
     net.apply_proxy()
     paths.ensure_dirs()
     paths.bootstrap()
