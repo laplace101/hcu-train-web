@@ -50,6 +50,7 @@ ADAPTER_DESCRIPTIONS = {
     "deepseek_family": "DeepSeek 系列（V2/V3/R1），MLA + MoE，DSA 稀疏注意力",
     "glm_family": "GLM 系列（GLM-5），DSA 索引注意力 + MoE",
     "moe_field_normalised": "MoE 字段别名归一：把专家数写在别名下的系列",
+    "minimax_family": "MiniMax 系列：sigmoid 门控 MoE、专家 FFN 宽度、MTP 模块、逐层注意力类型",
 }
 
 
@@ -66,6 +67,7 @@ class ModelSupport:
     suggestions: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     unknown_features: list[str] = field(default_factory=list)
+    is_approximate: bool = False
     source: str | None = None
     revision: str | None = None
     preset: bool = False
@@ -84,6 +86,7 @@ class ModelSupport:
             "suggestions": self.suggestions,
             "warnings": self.warnings,
             "unknown_features": self.unknown_features,
+            "is_approximate": self.is_approximate,
             "source": self.source,
             "revision": self.revision,
             "preset": self.preset,
@@ -99,9 +102,21 @@ STATUS_LABELS = {
 
 
 def _classify(verdict: dict[str, Any]) -> str:
-    """Map a compatibility verdict onto a support status."""
+    """Map a compatibility verdict onto a support status.
+
+    Three levels, and the middle one matters:
+
+      * `estimable` — the kernel models this architecture exactly;
+      * `approximate` — the kernel has no dedicated model for it, or the
+        family adapter handles part of it only approximately (MiniMax's
+        Lightning attention is mapped onto the kernel's Gated DeltaNet
+        spec, which is a different operator);
+      * `not_estimable` — the kernel cannot represent the model at all.
+    """
     if not verdict["supported"]:
         return "not_estimable"
+    if verdict.get("is_approximate"):
+        return "approximate"
     if verdict.get("adapter_is_fallback"):
         return "approximate"
     return "estimable"
@@ -170,6 +185,7 @@ def check_reference(
     support.suggestions = verdict.get("suggestions") or []
     support.warnings = verdict.get("warnings") or []
     support.unknown_features = verdict.get("unknown_features") or []
+    support.is_approximate = bool(verdict.get("is_approximate"))
     return support
 
 
@@ -264,6 +280,12 @@ def matrix() -> dict[str, Any]:
 #: The config fields each adapter reads. Taken from the kernel's adapter
 #: sources, so the matrix states what the kernel actually consumes.
 ADAPTER_FIELDS: dict[str, set[str]] = {
+    "minimax_family": {"num_local_experts", "num_experts",
+                       "mlp_intermediate_size", "moe_intermediate_size",
+                       "num_experts_per_tok", "num_mtp_modules",
+                       "mtp_num_layers", "attn_type_list", "layer_types",
+                       "scoring_func", "shared_moe_mode", "use_routing_bias",
+                       "use_mtp", "mtp_transformer_layers"},
     "qwen_hybrid": {"layer_types", "full_attention_interval",
                     "linear_conv_kernel_dim", "linear_key_head_dim",
                     "linear_value_head_dim", "linear_num_key_heads",
@@ -308,6 +330,8 @@ def adapter_capabilities() -> dict[str, Any]:
             "supports_vision": name in {"qwen3_vl", "qwen3_5", "qwen_hybrid"},
             "supports_dsa": name in {"glm5", "deepseek_family", "glm_family"},
             "supports_mlp_attention": name in {"qwen3_5", "qwen_hybrid"},
+            "supports_hybrid_attention": name in {"qwen3_5", "qwen_hybrid",
+                                                  "minimax_family"},
             "is_fallback": name in compatibility.FALLBACK_ADAPTERS,
             "is_family_module": name in compatibility.FAMILY_ADAPTERS,
         }

@@ -74,6 +74,19 @@ FAMILY_ADAPTERS = {
                   "indexer_types", "moe_layer_freq", "first_k_dense_replace"},
         "dsa_capable": True,
     },
+    "minimax_family": {
+        "family": "MiniMax 系列",
+        "covers": "MiniMax M2 / M2.x / M1 / Text-01 系列",
+        "reads": {"num_local_experts", "num_experts", "mlp_intermediate_size",
+                  "moe_intermediate_size", "num_experts_per_tok",
+                  "num_mtp_modules", "mtp_num_layers", "attn_type_list",
+                  "layer_types", "scoring_func"},
+        "dsa_capable": False,
+        # Lightning Attention is not Gated DeltaNet. The kernel's linear
+        # attention spec is the latter, so a model with Lightning layers is
+        # approximated rather than modelled exactly.
+        "linear_attention_approximate": True,
+    },
     "moe_field_normalised": {
         "family": "MoE 字段别名归一",
         "covers": "把专家数写在别名下的任意 MoE 系列",
@@ -104,12 +117,40 @@ UNKNOWN_ARCH_MARKERS = {
     "engram_head_dim": "engram n-gram 记忆结构",
     "engram_n_heads": "engram n-gram 记忆结构",
     "candidate_block_size": "candidate 块稀疏结构",
-    "attn_type_list": "混合线性/全注意力（Lightning Attention）",
-    "use_mtp": "多 token 预测（MTP）开关",
-    "mtp_transformer_layers": "多 token 预测（MTP）层定义",
     "index_head_dim": "DSA 索引注意力结构",
     "index_n_heads": "DSA 索引注意力结构",
     "index_topk": "DSA 索引注意力结构",
+}
+
+#: Structures the kernel handles through a family adapter, but only
+#: approximately. They do not block the estimate — they change what
+#: "estimate" means, and the payload has to say so.
+#:
+#: `attn_type_list` is MiniMax's per-layer attention layout. The MiniMax
+#: adapter maps its Lightning (linear-attention) layers onto the kernel's
+#: Gated DeltaNet spec, which is a different operator — Lightning has no
+#: delta-rule state update — so the linear layers are approximated.
+APPROXIMATED_MARKERS = {
+    "attn_type_list": "Lightning 混合注意力（内核的线性注意力规格是 Gated DeltaNet，"
+                      "与 Lightning 不是同一种算子，线性层按近似处理）",
+    "use_mtp": "多 token 预测（MTP）开关",
+    "mtp_transformer_layers": "多 token 预测（MTP）层定义",
+    "use_routing_bias": "路由偏置（内核未建模）",
+    "shared_moe_mode": "共享专家模式（内核按标准 MoE 计算）",
+    "quantization_config": "FP8 权重量化（内核按 bf16 建模，显存与算力均偏高）",
+    "use_qk_norm": "QK 归一化（内核按标准注意力计算）",
+    "qk_norm_type": "逐层 QK 归一化（内核按标准注意力计算）",
+}
+
+#: Features that change the model's *numbers* but not its cost. A sigmoid
+#: router does the same amount of work as a softmax one — one elementwise
+#: pass and a top-k — so the estimate is unaffected. Reporting it as an
+#: approximation would dilute the cases that really are approximate.
+NUMERIC_ONLY_MARKERS = {
+    "scoring_func": "sigmoid 门控路由（与 softmax 路由的计算量相同，不影响估算）",
+    "output_router_logits": "路由 logits 输出（不影响计算量）",
+    "router_aux_loss_coef": "路由辅助损失（不影响计算量）",
+    "router_jitter_noise": "路由抖动噪声（不影响计算量）",
 }
 
 #: Adapters whose model spec includes the DSA index-attention layout.
@@ -155,6 +196,24 @@ ADAPTER_READS_FIELDS = {
 }
 
 
+def _has_linear_layers(text: dict[str, Any]) -> bool:
+    """Whether the config declares any linear-attention layer.
+
+    MiniMax states the per-layer attention kind in `attn_type_list`, where
+    `1` marks a full-attention layer and `0` a Lightning layer. A list
+    that is entirely `1` means the model uses full attention everywhere.
+    """
+    attn_list = text.get("attn_type_list")
+    if attn_list:
+        return any(int(value) != 1 for value in attn_list)
+
+    layer_types = text.get("layer_types")
+    if layer_types:
+        return any(str(value) != "full_attention" for value in layer_types)
+
+    return False
+
+
 def _text_config(config: dict[str, Any]) -> dict[str, Any]:
     """The language part of a config, whether nested or flat."""
     text = config.get("text_config")
@@ -197,6 +256,7 @@ def check_compatibility(config: dict[str, Any]) -> dict[str, Any]:
         )
         return {
             "supported": False,
+            "is_approximate": False,
             "adapter": None,
             "adapter_is_fallback": False,
             "adapter_is_specialised": False,
@@ -298,6 +358,41 @@ def check_compatibility(config: dict[str, Any]) -> dict[str, Any]:
             "不影响注意力布局与专家分布，估算结果仍在同一量级"
         )
 
+    # Structures a family adapter handles, but only approximately. These
+    # do not block the estimate; they change what the estimate means, so
+    # they are reported and the estimate is marked as approximate.
+    # The Lightning marker only applies when the model actually has
+    # linear-attention layers. MiniMax-M2's released config still carries
+    # `attn_type_list`, but with the default value `[1] * num_hidden_layers`
+    # — every layer is a full-attention layer, so there is nothing to
+    # approximate.
+    def _approximated(field: str) -> bool:
+        present = text.get(field) is not None or config.get(field) is not None
+        if not present:
+            return False
+        if field == "attn_type_list":
+            return _has_linear_layers(text)
+        return True
+
+    approximated = sorted({
+        label for field, label in APPROXIMATED_MARKERS.items()
+        if _approximated(field)
+    })
+
+    numeric_only = sorted({
+        label for field, label in NUMERIC_ONLY_MARKERS.items()
+        if text.get(field) is not None or config.get(field) is not None
+    })
+    if numeric_only:
+        warnings.append(
+            f"该模型的以下特性只影响数值行为、不影响计算量：{'、'.join(numeric_only)}"
+        )
+    if approximated:
+        warnings.append(
+            f"该模型的部分结构在内核里只有近似建模：{'、'.join(approximated)}；"
+            "估算结果可用于量级与方案对比，不宜作为最终容量依据"
+        )
+
     # Fields the kernel reads but the chosen adapter does not apply. These
     # do not block the estimate — the structure is approximated with the
     # adapter's own formulas — so they are reported as warnings.
@@ -329,8 +424,13 @@ def check_compatibility(config: dict[str, Any]) -> dict[str, Any]:
         )
 
     supported = not reasons
+    # An approximation does not make the model unestimable — it makes the
+    # estimate an estimate of the wrong thing, which the caller has to be
+    # able to see.
+    is_approximate = bool(approximated) and not reasons
     return {
         "supported": supported,
+        "is_approximate": is_approximate,
         "adapter": adapter,
         "adapter_is_fallback": adapter in FALLBACK_ADAPTERS,
         "adapter_is_specialised": adapter in SPECIALISED_ADAPTERS,

@@ -50,6 +50,7 @@ run "模型来源与兼容性"   "$PY" tests/test_model_sources.py
 run "适配器选择一致性"   "$PY" tests/test_adapter_agreement.py
 run "模型支持矩阵"       "$PY" tests/test_support_matrix.py
 run "家族适配器"         "$PY" tests/test_family_adapters.py
+run "MiniMax 家族适配器"  "$PY" tests/test_minimax_adapter.py
 run "实测对照（通用）"    "$PY" tests/test_measured_compare.py
 
 if command -v node >/dev/null 2>&1 && [ -d node_modules/jsdom ]; then

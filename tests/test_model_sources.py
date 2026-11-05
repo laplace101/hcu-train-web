@@ -100,8 +100,10 @@ def main() -> int:
     # The normalising adapter fixes the field name, so the count becomes
     # visible — but the model still carries structures the kernel cannot
     # represent, so the estimate stays refused.
-    check("专家数被归一化接管",
-          verdict_moe["adapter"] == "moe_field_normalised",
+    # A MiniMax-shaped config is claimed by the MiniMax family adapter,
+    # which handles the field names itself.
+    check("MiniMax 形状的配置由家族适配器接管",
+          verdict_moe["adapter"] == "minimax_family",
           str(verdict_moe["adapter"]))
     check("归一化后不再因专家数被拒",
           not any("稠密" in r for r in verdict_moe["reasons"]),
@@ -128,6 +130,8 @@ def main() -> int:
                    "architectures": ["FooForCausalLM"],
                    "num_local_experts": 128, "num_experts_per_tok": 4}
     verdict_unknown_moe = compatibility.check_compatibility(unknown_moe)
+    # An unknown family with an unreadable expert count falls to the
+    # field-normalising adapter.
     check("未知模型的专家数由归一化适配器接管",
           verdict_unknown_moe["adapter"] == "moe_field_normalised",
           str(verdict_unknown_moe["adapter"]))

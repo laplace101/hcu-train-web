@@ -63,7 +63,7 @@ const FIXTURES = {
       { reference: 'qwen2-5-7b', status: 'approximate', status_label: '可估算（近似值）',
         adapter: 'generic_gpt', adapter_description: '通用稠密解码器兜底',
         family: 'Qwen3', reasons: [],
-        warnings: ['该模型的结构特征在内核里没有专用适配器'] },
+        warnings: ['该模型的部分结构在内核里只有近似建模：FP8 权重量化（内核按 bf16 建模）'] },
       { reference: 'deepseek-v3-2-exp', status: 'not_estimable', status_label: '不可估算',
         adapter: 'deepseek_v3', adapter_description: '',
         family: 'DeepSeek', warnings: [],
@@ -653,6 +653,9 @@ async function main() {
   check('列出适配器', supportSummary.textContent.includes('qwen3'));
   check('显示可精确估算', supportBox.textContent.includes('可精确估算'));
   check('显示近似标注', supportBox.textContent.includes('可估算（近似值）'));
+  check('说明为什么是近似值',
+    supportBox.textContent.includes('近似建模'),
+    supportBox.textContent.match(/近似建模[^\n]{0,40}/)?.[0] || '');
   check('显示不可估算', supportBox.textContent.includes('不可估算'));
   check('不可估算时给出原因',
     supportBox.textContent.includes('DSA 索引注意力结构'));

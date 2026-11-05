@@ -85,11 +85,15 @@ def main() -> int:
     print("\n=== ③ 已知模型的判定 ===")
     # The family adapters own the hybrid-attention and DSA series; the
     # kernel's own adapters keep the models it already handles exactly.
+    # The FP8-published DeepSeek checkpoints are marked approximate: the
+    # kernel models them in bf16, so both memory and compute come out
+    # high. GLM-5 ships in bf16 and only uses a sigmoid router, which does
+    # the same amount of work as a softmax one — so it stays exact.
     expectations = [
         ("qwen3-8b", "estimable", "qwen3"),
         ("qwen3-5-2b", "estimable", "qwen_hybrid"),
         ("qwen3-vl-8b-instruct", "estimable", "qwen3_vl"),
-        ("deepseek-v3", "estimable", "deepseek_v3"),
+        ("deepseek-v3", "approximate", "deepseek_v3"),
         ("glm-5", "estimable", "glm_family"),
         ("qwen2-5-7b", "approximate", "generic_gpt"),
     ]
@@ -138,7 +142,7 @@ def main() -> int:
     adapters = (r.get_json() or {}).get("adapters") or {}
     check("HTTP 200", r.status_code == 200)
     # Six from the kernel plus the four family modules this project adds.
-    check("列出 10 个适配器", len(adapters) == 10, str(len(adapters)))
+    check("列出 11 个适配器", len(adapters) == 11, str(len(adapters)))
     check("glm5 支持 DSA", adapters["glm5"]["supports_dsa"] is True)
     check("qwen3_vl 支持视觉", adapters["qwen3_vl"]["supports_vision"] is True)
     check("generic 是兜底", adapters["generic_gpt"]["is_fallback"] is True)

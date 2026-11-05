@@ -1331,9 +1331,17 @@ function renderSupportRows() {
   rows.forEach(row => {
     const kind = row.status === 'estimable' ? 'ok'
       : row.status === 'approximate' ? 'warn' : 'bad';
-    const detail = row.status === 'not_estimable'
-      ? (row.reasons || []).join('；')
-      : (row.warnings || []).join('；') || row.adapter_description || '';
+    let detail;
+    if (row.status === 'not_estimable') {
+      detail = (row.reasons || []).join('；');
+    } else {
+      // A warning is the reason the row is marked approximate; the
+      // adapter description is the fallback for an exact row.
+      const warnings = (row.warnings || []).filter(w => w.includes('近似建模'));
+      detail = warnings.length
+        ? warnings.join('；')
+        : (row.warnings || []).join('；') || row.adapter_description || '';
+    }
     tbody.appendChild(el('tr', {}, [
       el('td', {}, el('code', {}, row.reference)),
       el('td', {}, el('span', { class: `badge badge--${kind}` }, row.status_label)),

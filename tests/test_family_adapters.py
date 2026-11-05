@@ -116,14 +116,14 @@ def probe(slug: str) -> dict | None:
 def main() -> int:
     print("=== ① 家族适配器注册 ===")
     registered = families.register_all()
-    check("注册了四个家族模块", len(families.FAMILY_MODULES) == 4,
+    check("注册了五个家族模块", len(families.FAMILY_MODULES) == 5,
           str(len(families.FAMILY_MODULES)))
 
     from hcu_train_simulator.models.registry import registered_model_adapters
 
     names = {a.name for a in registered_model_adapters()}
     for name in ("qwen_hybrid", "deepseek_family", "glm_family",
-                 "moe_field_normalised"):
+                 "minimax_family", "moe_field_normalised"):
         check(f"{name} 已注册", name in names)
 
     # Registering twice must not raise — the kernel rejects duplicates.
@@ -134,7 +134,7 @@ def main() -> int:
     cases = [
         ("Qwen3-Next-80B-A3B", "Qwen-Qwen3-Next-80B-A3B-Instruct", "qwen_hybrid"),
         ("Qwen3.5-35B-A3B", "Qwen-Qwen3.5-35B-A3B", "qwen_hybrid"),
-        ("MiniMax-M2", "MiniMaxAI-MiniMax-M2", "moe_field_normalised"),
+        ("MiniMax-M2", "MiniMaxAI-MiniMax-M2", "minimax_family"),
     ]
     for label, slug, expected in cases:
         config = probe(slug)
@@ -189,11 +189,9 @@ def main() -> int:
     mini = probe("MiniMaxAI-MiniMax-M2")
     if mini:
         verdict = compatibility.check_compatibility(mini)
-        check("MiniMax-M2 仍被拒绝", verdict["supported"] is False,
+        check("MiniMax-M2 可估算", verdict["supported"] is True,
               str(verdict["reasons"])[:70])
-        check("拒绝原因是未建模的结构而非字段名",
-              any("无法表示" in r for r in verdict["reasons"]),
-              verdict["reasons"][0][:60] if verdict["reasons"] else "")
+        check("MiniMax-M2 标为近似", verdict.get("is_approximate") is True)
 
     print("\n=== ⑤ DeepSeek DSA 系列被家族适配器接管 ===")
     v32 = probe("deepseek-ai-DeepSeek-V3.2-Exp")

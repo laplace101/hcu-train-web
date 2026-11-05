@@ -25,7 +25,7 @@
  },
  "MiniMaxAI-MiniMax-M2": {
   "config": "MiniMaxAI-MiniMax-M2.json",
-  "expected_adapter": "moe_field_normalised"
+  "expected_adapter": "minimax_family"
  },
  "moonshotai-Kimi-K2-Instruct": {
   "config": "moonshotai-Kimi-K2-Instruct.json",
@@ -38,5 +38,13 @@
  "deepseek-ai-DeepSeek-V3.2-Exp": {
   "config": "deepseek-ai-DeepSeek-V3.2-Exp.json",
   "expected_adapter": "deepseek_family"
+ },
+ "MiniMaxAI-MiniMax-M1": {
+  "config": "MiniMaxAI-MiniMax-M1.json",
+  "expected_adapter": "minimax_family"
+ },
+ "MiniMaxAI-MiniMax-Text-01": {
+  "config": "MiniMaxAI-MiniMax-Text-01.json",
+  "expected_adapter": "minimax_family"
  }
 }

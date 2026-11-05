@@ -286,6 +286,7 @@ ModelScope 接入有白名单（`modelscope.cn` / `modelers.cn` 等）、SSRF �
 | `qwen_hybrid` | Qwen3.5 / Qwen3-Next / Qwen3.5-Next 系列 | 混合注意力（线性注意力层与全注意力层逐层交替）、MTP、MoE、视觉塔 |
 | `deepseek_family` | DeepSeek V2 / V3 / R1 系列 | MLA 低秩 KV、MoE、MTP、DSA 稀疏注意力 |
 | `glm_family` | GLM-5 系列 | DSA 索引注意力、MoE、MTP |
+| `minimax_family` | MiniMax M2 / M2.x / M1 / Text-01 系列 | sigmoid 门控 MoE、专家 FFN 宽度、MTP 模块、逐层注意力类型 |
 | `moe_field_normalised` | 把专家数写在别名下的任意 MoE 系列 | 专家数字段别名归一 |
 
 这些模块注册进内核自己的适配器注册表，所以**内核按同一套规则解析它们**——
@@ -328,10 +329,42 @@ MiniMax 把专家数写在 `num_local_experts`，内核只读 `num_experts` /
 
 停用开关：`HCU_NO_FAMILY_ADAPTERS=1` 让估算只走内核原生适配器，便于对照。
 
-**仍然被拒绝的模型。** 字段归一化只解决"字段名不同"，
-不解决"架构不同"。MiniMax 归一化后仍被拒绝，因为它的 Lightning 混合注意力
-（`attn_type_list`）、MTP 头、sigmoid router 在内核里没有对应建模——
-归一化让专家数被读到，但注意力布局仍然算不对。
+**MiniMax 的两代架构不同，适配器必须分别对待。**
+
+M2 及其后续版本**全部使用全注意力**。官方实现里只有一个注意力类，没有线性
+注意力变体；M2 论文也写明"adopts full multi-head attention across all layers,
+departing from the hybrid design used in MiniMax-Text-01"。但发布的 config
+里仍然带着 `attn_type_list`，值是默认值 `[1] * num_hidden_layers`——官方
+建模代码根本不读它。
+
+如果把它当成混合布局，估算会偏 **-11.7%**。适配器因此按 `attn_type_list`
+的实际取值判断：全是 1 就是全注意力模型。
+
+M1 与 Text-01 才是真混合：80 层中 70 层是 Lightning Attention、10 层是全
+注意力（每 8 层一个）。内核的线性注意力规格是 **Gated DeltaNet**，与
+Lightning 不是同一种算子（Lightning 没有 delta rule 的状态更新），所以线性
+层按近似处理，载荷里明确标注。
+
+三者的估算结果：
+
+| 模型 | 注意力布局 | iteration | 峰值显存 |
+|---|---|---|---|
+| MiniMax-M2 | 62 层全注意力 | 238662.73 ms | 8953.04 GiB |
+| MiniMax-M1 | 70 线性 + 10 全注意力 | 139130.15 ms | 3134.79 GiB |
+| MiniMax-Text-01 | 同 M1 | 139130.15 ms | 3134.79 GiB |
+
+M2 之前的估算把 256 个专家当成一个稠密 FFN，峰值显存 67.48 GiB——比实际
+**小 132 倍**。
+
+**近似与不可估算是分开的两件事。** 内核没建模某结构，不等于不能给数字：
+有些结构只影响数值行为（sigmoid 路由与 softmax 路由的计算量相同），有些会
+影响耗时与显存（FP8 量化会让 bf16 建模的显存与算力都偏高）。前者只作提示，
+后者才把状态标成"可估算（近似值）"。这样标注才有信息量——否则每个模型都会
+因为一点无关紧要的差异被降级。
+
+按这个口径，支持矩阵目前的分布是：Qwen3 / Qwen3-VL / Qwen3.5 全系列与
+GLM-5 全系列**可精确估算**；FP8 发布的 DeepSeek 系列**可估算（近似值）**；
+通用稠密解码器走兜底适配器，同样是近似值。
 
 ### 6.5 三类推荐方案
 
@@ -388,6 +421,7 @@ python tests/test_model_sources.py                   # 模型来源与兼容性�
 python tests/test_adapter_agreement.py               # 适配器选择与内核一致
 python tests/test_support_matrix.py                  # 模型支持矩阵
 python tests/test_family_adapters.py                 # 系列通用模块与准确性
+python tests/test_minimax_adapter.py                # MiniMax 家族适配器
 python tools/probe_model_support.py                  # 批量探测各系列模型
 ```
 

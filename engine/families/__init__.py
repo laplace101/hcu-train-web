@@ -64,6 +64,7 @@ def register_all() -> list[str]:
     from .qwen_hybrid import QwenHybridAdapter
     from .deepseek import DeepSeekFamilyAdapter
     from .glm import GLMFamilyAdapter
+    from .minimax import MiniMaxFamilyAdapter
     from .moe_fields import MoEFieldNormalisingAdapter
 
     registered: list[str] = []
@@ -71,6 +72,7 @@ def register_all() -> list[str]:
         QwenHybridAdapter,
         DeepSeekFamilyAdapter,
         GLMFamilyAdapter,
+        MiniMaxFamilyAdapter,
         MoEFieldNormalisingAdapter,
     ):
         adapter = factory()
@@ -113,6 +115,15 @@ FAMILY_MODULES = [
         "covers": "GLM-5 系列",
         "capability": "DSA 索引注意力、MoE、MTP",
         "detects": ["index_head_dim", "index_n_heads", "index_topk", "indexer_types"],
+    },
+    {
+        "name": "MiniMaxFamily",
+        "adapter": "minimax_family",
+        "covers": "MiniMax M2 / M2.x / M1 / Text-01 系列",
+        "capability": "sigmoid 门控 MoE、专家 FFN 宽度、MTP 模块、逐层注意力类型",
+        "detects": ["num_local_experts", "mlp_intermediate_size",
+                    "num_experts_per_tok", "num_mtp_modules",
+                    "attn_type_list", "scoring_func"],
     },
     {
         "name": "MoEFieldNormaliser",
