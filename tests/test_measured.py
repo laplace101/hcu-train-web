@@ -130,11 +130,27 @@ def main() -> int:
     check("给出估算与实测吞吐",
           m.get("estimate_tgs") is not None and m.get("measured_tgs") is not None,
           f"est {m.get('estimate_tgs')} / meas {m.get('measured_tgs')}")
-    check("给出偏差", m.get("tgs_deviation_percent") is not None,
-          f"{m.get('tgs_deviation_percent')}%")
-    check("标注匹配程度", m.get("match_quality") == "exact", str(m.get("match_quality")))
     check("说明可比性", bool(m.get("comparability_note")))
-    check("说明实测是 LoRA", m.get("measured_is_lora") is True)
+
+    # The full-parameter estimate is compared against full-parameter
+    # measurements. The database holds one such run for this model, and it
+    # ran at a different batch size, so the comparison is *not* like for
+    # like and the deviation is withheld rather than reported as if it
+    # were the estimator's error.
+    check("全参估算优先匹配全参实测", m.get("measured_is_lora") is False,
+          f"measured_is_lora={m.get('measured_is_lora')}")
+    check("同口径时标记为可比", m.get("comparable") is True,
+          f"comparable={m.get('comparable')}")
+    check("标注是否同配置", m.get("like_for_like") in (True, False),
+          f"like_for_like={m.get('like_for_like')}")
+    if m.get("like_for_like") is False:
+        check("配置不同时不给偏差", m.get("tgs_deviation_percent") is None,
+              f"{m.get('tgs_deviation_percent')}")
+        check("说明配置差异", bool(m.get("match_differences")),
+              "；".join(m.get("match_differences") or []))
+    else:
+        check("同配置时给出偏差", m.get("tgs_deviation_percent") is not None,
+              f"{m.get('tgs_deviation_percent')}%")
 
     print("\n=== ⑦ 旧接口也带实测 ===")
     r = client.post("/api/simulate", json={

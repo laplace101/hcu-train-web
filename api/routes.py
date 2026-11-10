@@ -520,6 +520,9 @@ def measured_compare_route():
             return None
 
     estimate = body.get("estimate") or {}
+    # `measured_is_lora` says what kind of training the estimate is about.
+    # It decides which measured rows are looked for and whether the two
+    # sides are comparable.
     result = measured_compare.compare(
         estimate,
         slug=slug,
@@ -527,7 +530,7 @@ def measured_compare_route():
         seq_length=number("seq_length"),
         micro_batch_size=number("micro_batch_size"),
         mode=pick("mode"),
-        measured_is_lora=str(pick("measured_is_lora", "")).lower() in {"1", "true", "yes"},
+        estimate_is_lora=str(pick("measured_is_lora", "")).lower() in {"1", "true", "yes"},
     )
     return jsonify({"ok": True, **result})
 

@@ -51,7 +51,9 @@ run "适配器选择一致性"   "$PY" tests/test_adapter_agreement.py
 run "模型支持矩阵"       "$PY" tests/test_support_matrix.py
 run "家族适配器"         "$PY" tests/test_family_adapters.py
 run "MiniMax 家族适配器"  "$PY" tests/test_minimax_adapter.py
+run "Qwen3.6/3.8 新系列"  "$PY" tests/test_new_qwen_series.py
 run "实测对照（通用）"    "$PY" tests/test_measured_compare.py
+run "实测两类运行不混用"  "$PY" tests/test_measured_modes.py
 
 if command -v node >/dev/null 2>&1 && [ -d node_modules/jsdom ]; then
   run "前端 DOM 流程"     node tests/frontend_test.js

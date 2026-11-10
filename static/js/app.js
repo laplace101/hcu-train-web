@@ -1126,7 +1126,9 @@ function renderMeasured(measured) {
   // Throughput: the one dimension where the two are broadly comparable.
   if (measured.estimate_tgs && measured.measured_tgs) {
     const dev = measured.tgs_deviation_percent;
-    const tone = Math.abs(dev) <= 20 ? 'kpi--ok' : Math.abs(dev) <= 50 ? 'kpi--warn' : 'kpi--bad';
+    const tone = dev === null || dev === undefined
+      ? ''
+      : Math.abs(dev) <= 20 ? 'kpi--ok' : Math.abs(dev) <= 50 ? 'kpi--warn' : 'kpi--bad';
     const grid = el('div', { class: 'kpi-grid kpi-grid--compact' });
     grid.appendChild(kpi('估算 TGS', fmtInt(measured.estimate_tgs), '', '每卡 tokens/s'));
     grid.appendChild(kpi('实测 TGS', fmtInt(measured.measured_tgs), '', '每卡 tokens/s', tone));
@@ -1155,6 +1157,16 @@ function renderMeasured(measured) {
     + `seq ${best.cutoff_len ?? '—'} · LoRA r=${best.lora_rank ?? '—'} · ${best.ds_config || 'none'} · `
     + `单步 ${best.step_time_s ?? '—'} s · 峰值 ${best.peak_mem_mib ?? '—'} MiB`);
   box.appendChild(cfg);
+
+  // A configuration difference makes the throughput comparison misleading:
+  // the two numbers come from different batch sizes or ZeRO stages, so the
+  // gap between them says nothing about the estimator's accuracy.
+  if (measured.like_for_like === false && measured.match_differences
+      && measured.match_differences.length) {
+    box.appendChild(el('div', { class: 'notice notice--warn' },
+      `实测配置与估算不一致（${measured.match_differences.join('；')}），`
+      + '吞吐差异不反映估算精度，故不给出偏差。'));
+  }
 
   box.appendChild(el('div', { class: 'notice notice--info' }, measured.comparability_note));
 

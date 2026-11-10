@@ -63,9 +63,13 @@ def main() -> int:
         "WHERE status='OK' AND step_time_s IS NOT NULL AND tokens_per_s IS NOT NULL"
     )]
     conn.close()
+    # ⚠ `peak_mem_mib` 可能是 NULL：实测库里被判定为不可信的显存峰值（并发污染 /
+    #   违反 bs 单调性的异常读数）会被**清空该列但保留吞吐** —— 这是上游库的既定口径。
+    #   所以逐点复现时，显存那一列不能对 NULL 做除法（会 TypeError 崩掉整个测试）。
+    #   step_time 那一列仍然有效（吞吐还在），因此只跳过显存误差、不跳过该格。
     slug_by = _slug_map()
 
-    buckets: dict[str, list[tuple[float, float, dict]]] = {}
+    buckets: dict[str, list[tuple[float, float | None, dict]]] = {}
     for row in rows:
         slug = slug_by.get(_normalise(row["model"]))
         if not slug:
@@ -96,22 +100,30 @@ def main() -> int:
             micro_step = (row["bs"] * row["cutoff_len"] / row["tokens_per_s"])
             reference = micro_step * (row.get("grad_accum") or 1)
         step_err = (est["step_time_s"] - reference) / reference * 100
-        mem_err = (est["peak_gib"] - row["peak_mem_mib"] / 1024) / (row["peak_mem_mib"] / 1024) * 100
+        # 显存峰值不可信（NULL）的行：只跳过显存误差，step_time 误差仍然计入
+        mem_err = None
+        if row["peak_mem_mib"]:
+            mem_err = (est["peak_gib"] - row["peak_mem_mib"] / 1024) / (row["peak_mem_mib"] / 1024) * 100
         buckets.setdefault(conf, []).append((step_err, mem_err, row))
 
     for name, items in sorted(buckets.items()):
         step_errs = [e for e, _, _ in items]
-        mem_errs = [m for _, m, _ in items]
+        # 显存误差只对有有效读数的格统计（不可信读数的格被排除，不是按 0 计）
+        mem_errs = [m for _, m, _ in items if m is not None]
         mae = statistics.mean(abs(e) for e in step_errs)
-        mem_mae = statistics.mean(abs(e) for e in mem_errs)
+        mem_mae = statistics.mean(abs(e) for e in mem_errs) if mem_errs else None
         print(f"\n  --- {name} (n={len(items)}) ---")
         print(f"    step_time MAE {mae:.1f}%  max {max(abs(e) for e in step_errs):.1f}%")
-        print(f"    peak_mem  MAE {mem_mae:.1f}%  max {max(abs(e) for e in mem_errs):.1f}%")
+        if mem_errs:
+            print(f"    peak_mem  MAE {mem_mae:.1f}%  max {max(abs(e) for e in mem_errs):.1f}%")
+        else:
+            print("    peak_mem  (无有效显存读数)")
         if name == "measured_fit":
             check("多样本拟合 step_time 精度 <15%", mae < 15, f"{mae:.1f}%")
-            check("多样本拟合显存精度 <5%", mem_mae < 5, f"{mem_mae:.1f}%")
+            check("多样本拟合显存精度 <5%", mem_mae is not None and mem_mae < 5,
+                  "n/a" if mem_mae is None else f"{mem_mae:.1f}%")
         else:
-            print(f"    (低置信组，精度不作硬性要求)")
+            print("    (低置信组，精度不作硬性要求)")
 
     print("\n=== LoRA 估算输出 ===")
     est = lora_model.estimate_lora(

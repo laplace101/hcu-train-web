@@ -307,10 +307,19 @@ def _row_is_lora(row: dict[str, Any]) -> bool:
     have to assume it. Rows written before the column was filled in carry
     a LoRA rank instead.
     """
-    finetuning = str(row.get("finetuning_type") or "").strip().lower()
-    if finetuning:
-        return finetuning in {"lora", "qlora"}
-    return row.get("lora_rank") is not None
+    return measured_repo.is_lora_row(row)
+
+
+def _scenario_ds_config(scenario: TrainingScenario) -> str | None:
+    """The DeepSpeed stage the scenario asks for, if it names one.
+
+    A LoRA scenario carries its stage on the scenario; the full-parameter
+    path derives it from the parallel layout, where "none" means plain
+    DDP without sharding.
+    """
+    if scenario.mode is TrainingMode.SFT_LORA:
+        return scenario.lora_ds_config or "none"
+    return None
 
 
 def measured_comparison(
@@ -321,9 +330,13 @@ def measured_comparison(
 ) -> dict[str, Any]:
     """Attach measured benchmark rows to an estimate.
 
-    The measured data is LoRA fine-tuning on real BW1000 hardware, while the
-    estimator models full-parameter training. The two are therefore *not*
-    directly comparable, and the payload says so explicitly:
+    Which kind of measured row is sought depends on what is being
+    estimated. A LoRA estimate wants LoRA rows; a full-parameter estimate
+    wants full-parameter rows, and falls back to LoRA rows only when the
+    database has no full-parameter measurement for that model yet.
+
+    When the two do not match — a LoRA measurement against a full-parameter
+    estimate — the payload says so explicitly:
 
       * the throughput numbers are close enough to be a sanity check;
       * the memory numbers are not comparable at all, because LoRA freezes
@@ -338,6 +351,11 @@ def measured_comparison(
             "reason": "本机未找到实测数据库 bench.db",
         }
 
+    # A LoRA estimate is compared against LoRA measurements; anything else
+    # against full-parameter measurements.
+    wants_lora = scenario.mode is TrainingMode.SFT_LORA
+    preferred = "lora" if wants_lora else "full"
+
     # Which catalogue slug does this estimate correspond to?
     slug = scenario.model_slug
     if not slug:
@@ -350,7 +368,14 @@ def measured_comparison(
             "reason": "该模型不在实测数据库的覆盖范围内",
         }
 
-    summary = measured_repo.summarise_for_slug(slug)
+    summary = measured_repo.summarise_for_slug(slug, finetuning=preferred)
+    fell_back = False
+    if not summary.get("rows"):
+        # No measurement of the kind this estimate is about. Fall back to
+        # the other kind so the planner still sees the hardware's behaviour
+        # — and say so, because the two are not directly comparable.
+        summary = measured_repo.summarise_for_slug(slug)
+        fell_back = True
     if not summary.get("rows"):
         return {
             "available": True,
@@ -369,7 +394,8 @@ def measured_comparison(
     # same match quality.
     matched = measured_compare.find_measured(
         slug=slug, gpu_count=gpus, seq_length=seq, micro_batch_size=mbs,
-        rows=rows,
+        ds_config=_scenario_ds_config(scenario),
+        rows=rows, estimate_is_lora=wants_lora,
     )
     if matched is None:
         return {
@@ -381,34 +407,82 @@ def measured_comparison(
     best = matched["row"]
 
     # Compare the estimate against the measurement.
+    #
+    # The two sides report throughput under different names: the simulator
+    # kernel calls it ``tgs``, the LoRA resource model ``tokens_per_s``.
+    # Both are per-card tokens per second, so they are directly comparable
+    # — the name is just what each producer happens to call it.
     estimate_tgs = None
     current = plans.get("current") or {}
-    if current.get("tgs"):
-        estimate_tgs = current["tgs"]
-    elif plans.get("performance", {}).get("tgs"):
-        estimate_tgs = plans["performance"]["tgs"]
+    for source in (current, plans.get("performance") or {}):
+        for key in ("tgs", "tokens_per_s"):
+            value = source.get(key)
+            if value:
+                estimate_tgs = value
+                break
+        if estimate_tgs:
+            break
 
     measured_tgs = best.get("tokens_per_s")
     deviation = None
     if estimate_tgs and measured_tgs:
         deviation = round((estimate_tgs - measured_tgs) / measured_tgs * 100, 1)
 
+    # A deviation is only meaningful when the two sides were measured at
+    # the same configuration. Across different batch sizes, sequence
+    # lengths or ZeRO stages the throughput differs for reasons that have
+    # nothing to do with the estimator's accuracy, so the number is
+    # withheld rather than shown as if it were an error.
+    like_for_like = matched["match_quality"] == measured_compare.MATCH_EXACT
+    if not like_for_like:
+        deviation = None
+
     # Whether the measured row was a LoRA run is read from the row, not
-    # assumed. The database holds LoRA runs today, but full-parameter runs
-    # would be stored in the same table, and the comparison has to adapt
-    # without a code change.
+    # assumed. The database holds both kinds of run, so the comparison has
+    # to read which one it actually matched.
     measured_is_lora = _row_is_lora(best)
 
-    if measured_is_lora:
+    # The two are directly comparable only when they measure the same kind
+    # of training. A LoRA measurement against a full-parameter estimate
+    # (or the reverse) is reference data, not a validation.
+    same_kind = measured_is_lora == wants_lora
+
+    if same_kind:
+        if wants_lora:
+            comparability_note = (
+                "实测数据为 LoRA 微调（基座冻结，无基座梯度与优化器状态），"
+                "与这里的估算同口径，偏差可直接用于校准 LoRA 资源模型。"
+            )
+        else:
+            comparability_note = (
+                "实测数据为全参训练，与这里的估算同口径，"
+                "偏差可直接用于校准估计器内核。"
+            )
+    elif measured_is_lora:
         comparability_note = (
             "实测数据为 LoRA 微调（基座冻结，无基座梯度与优化器状态），"
-            "估算为全参训练内核。吞吐量可作量级参照，显存不可直接对比——"
+            "而这里的估算来自全参训练内核，两者不是同一口径。"
+            "吞吐量可作量级参照，显存不可直接对比——"
             "LoRA 冻结基座后显存显著低于全参估算属预期现象。"
         )
     else:
         comparability_note = (
-            "实测数据为全参训练，与这里的估算同口径，"
-            "偏差可直接用于校准估计器内核。"
+            "实测数据为全参训练，而这里的估算来自 LoRA 模型（基座冻结），"
+            "两者不是同一口径，偏差不代表估算的误差。"
+        )
+
+    # The configuration differs, so the two numbers come from different
+    # runs. Say which fields differ and why the deviation is withheld.
+    if not like_for_like and matched["differences"]:
+        comparability_note += (
+            "（实测配置与估算不一致："
+            + "；".join(matched["differences"])
+            + "，故不给出偏差。）"
+        )
+
+    if fell_back:
+        comparability_note += (
+            "（实测库暂无该模型同口径的记录，此处为另一类训练的参考数据。）"
         )
 
     return {
@@ -418,11 +492,12 @@ def measured_comparison(
         "model_names": summary.get("model_names"),
         "source": summary.get("source"),
         "measured_is_lora": measured_is_lora,
-        "comparable": not measured_is_lora,
+        "comparable": same_kind,
         "comparability_note": comparability_note,
         "estimate_tgs": estimate_tgs,
         "measured_tgs": measured_tgs,
         "tgs_deviation_percent": deviation,
+        "like_for_like": like_for_like,
         "estimate_peak_gib": current.get("peak_gib"),
         "measured_peak_gib": (
             round(best["peak_mem_mib"] / 1024, 2) if best.get("peak_mem_mib") else None
@@ -562,7 +637,13 @@ def measured_for_legacy(
         return {"available": True, "matched": False,
                 "reason": "该模型不在实测数据库的覆盖范围内"}
 
-    summary = measured_repo.summarise_for_slug(slug)
+    # The legacy route simulates full-parameter training, so it looks for
+    # full-parameter measurements and falls back to LoRA ones.
+    summary = measured_repo.summarise_for_slug(slug, finetuning="full")
+    fell_back = False
+    if not summary.get("rows"):
+        summary = measured_repo.summarise_for_slug(slug)
+        fell_back = True
     if not summary.get("rows"):
         return {"available": True, "matched": False, "slug": slug,
                 "reason": summary.get("reason") or "实测库中没有该模型的成功记录"}
@@ -579,21 +660,46 @@ def measured_for_legacy(
     if estimate_tgs and measured_tgs:
         deviation = round((estimate_tgs - measured_tgs) / measured_tgs * 100, 1)
 
+    # A deviation is only meaningful when the two sides were measured at
+    # the same configuration.
+    like_for_like = _match_quality(best, gpus, seq, mbs or 1) == "exact"
+    if not like_for_like:
+        deviation = None
+
+    # Whether the matched row is a LoRA run is read from the row. The
+    # database holds both kinds of run, so it cannot be assumed.
+    measured_is_lora = _row_is_lora(best)
+    same_kind = not measured_is_lora
+
+    if same_kind:
+        comparability_note = (
+            "实测数据为全参训练，与这里的估算同口径，"
+            "偏差可直接用于校准估计器内核。"
+        )
+    else:
+        comparability_note = (
+            "实测数据为 LoRA 微调（基座冻结，无基座梯度与优化器状态），"
+            "估算为全参训练内核。吞吐量可作量级参照，显存不可直接对比——"
+            "LoRA 冻结基座后显存显著低于全参估算属预期现象。"
+        )
+    if fell_back:
+        comparability_note += (
+            "（实测库暂无该模型的全参记录，此处为 LoRA 参考数据。）"
+        )
+
     return {
         "available": True,
         "matched": True,
         "slug": slug,
         "model_names": summary.get("model_names"),
         "source": summary.get("source"),
-        "measured_is_lora": True,
-        "comparability_note": (
-            "实测数据为 LoRA 微调（基座冻结，无基座梯度与优化器状态），"
-            "估算为全参训练内核。吞吐量可作量级参照，显存不可直接对比——"
-            "LoRA 冻结基座后显存显著低于全参估算属预期现象。"
-        ),
+        "measured_is_lora": measured_is_lora,
+        "comparable": same_kind,
+        "comparability_note": comparability_note,
         "estimate_tgs": estimate_tgs,
         "measured_tgs": measured_tgs,
         "tgs_deviation_percent": deviation,
+        "like_for_like": like_for_like,
         "estimate_peak_gib": outcome.get("peak_memory_gib"),
         "measured_peak_gib": (
             round(best["peak_mem_mib"] / 1024, 2) if best.get("peak_mem_mib") else None
@@ -651,10 +757,12 @@ def _estimate_lora(scenario: TrainingScenario, spec: Any) -> dict[str, Any]:
     except lora_model.LoraNotSupported as exc:
         raise ScenarioRejected(str(exc), exc.details)
 
-    measured = measured_comparison(scenario, {}, plans, hardware)
-
     # The "current configuration" view: estimate the scenario's own card and
     # batch count rather than a searched plan.
+    #
+    # This is computed *before* the measured comparison, because the
+    # comparison needs it: the estimate it compares against is the one the
+    # user asked for, not the best-performing plan the search found.
     current = None
     try:
         current = lora_model.estimate_lora(
@@ -671,6 +779,10 @@ def _estimate_lora(scenario: TrainingScenario, spec: Any) -> dict[str, Any]:
         )
     except lora_model.LoraNotSupported:
         current = None
+
+    measured = measured_comparison(
+        scenario, {}, {**plans, "current": current}, hardware
+    )
 
     return {
         "ok": True,

@@ -49,6 +49,11 @@ MODELS: list[tuple[str, str, str, str]] = [
     ("Qwen/Qwen3.5-35B-A3B", "Qwen3.5", "Qwen3.5-35B-A3B", "moe"),
     ("Qwen/Qwen3.5-122B-A10B", "Qwen3.5", "Qwen3.5-122B-A10B", "moe"),
     ("Qwen/Qwen3.5-397B-A17B", "Qwen3.5", "Qwen3.5-397B-A17B", "moe"),
+    # ---- Qwen3.6 (same hybrid-attention architecture as Qwen3.5) ----
+    ("Qwen/Qwen3.6-27B", "Qwen3.6", "Qwen3.6-27B", "dense"),
+    ("Qwen/Qwen3.6-35B-A3B", "Qwen3.6", "Qwen3.6-35B-A3B", "moe"),
+    # ---- Qwen3.8 (same hybrid-attention architecture as Qwen3.5) ----
+    ("Qwen/Qwen3.8-27B", "Qwen3.8", "Qwen3.8-27B", "dense"),
     # ---- Qwen3-VL (adapter: qwen3_vl, nested text_config + vision_config) ----
     ("Qwen/Qwen3-VL-2B-Instruct", "Qwen3-VL", "Qwen3-VL-2B", "vlm"),
     ("Qwen/Qwen3-VL-4B-Instruct", "Qwen3-VL", "Qwen3-VL-4B", "vlm"),
@@ -111,6 +116,12 @@ def normalised_config(raw: dict) -> dict:
     expert count, the expert FFN width, the attention layout — and the
     catalog has to be derived from the same view, or it would describe a
     different model from the one the simulator estimates.
+
+    A VLM config keeps the text model's dimensions inside a nested
+    `text_config`, and the adapter's normalised view keeps them there too.
+    The dimensions the catalog needs are in that nested block, so it is
+    unwrapped before they are read. A flat (text-only) config is returned
+    as it is.
     """
     try:
         from engine import families
@@ -119,9 +130,19 @@ def normalised_config(raw: dict) -> dict:
         from hcu_train_simulator.models.registry import resolve_model_adapter
 
         adapter = resolve_model_adapter(raw)
-        return adapter.normalize_config(raw).language
+        normalised = adapter.normalize_config(raw).language
     except Exception:  # noqa: BLE001
-        return text_config_of(raw)
+        normalised = text_config_of(raw)
+
+    nested = normalised.get("text_config")
+    if isinstance(nested, dict):
+        # The nested block holds the text model's own fields; the outer
+        # ones (model_type, tie_word_embeddings, ...) describe the whole
+        # model and are kept alongside them.
+        merged = dict(normalised)
+        merged.update(nested)
+        return merged
+    return dict(normalised)
 
 
 def derive_options(raw: dict) -> dict:

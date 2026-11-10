@@ -1,8 +1,8 @@
 """Read-only access to the local benchmark database (plan §8 "实测数据").
 
 Source: `/root/bench_results/bench.db` — the DCU training/benchmark result
-store kept on this machine. It holds LoRA fine-tuning measurements taken on
-real BW1000 hardware (166 successful runs across 12 models).
+store kept on this machine. It holds training measurements taken on real
+BW1000 hardware.
 
 **This module never writes.** The connection is opened with `mode=ro`, so the
 database file cannot be modified even by accident. The plan's rule that the
@@ -15,6 +15,14 @@ no base optimiser state — the measured memory is roughly an order of
 magnitude below the full-parameter estimate while the throughput is close.
 Showing the measured rows next to the estimate is what makes that gap
 visible instead of hiding it.
+
+**The table holds more than one kind of run.** LoRA and full-parameter
+measurements live in the same rows, told apart by `finetuning_type`. They
+must never be mixed: the two differ by the size of the base weights'
+gradient and optimiser state, so a full-parameter row says nothing about
+whether a LoRA configuration fits in memory, and a LoRA row says nothing
+about whether a full-parameter configuration does. Every query that feeds a
+calibration therefore states which kind of run it wants.
 """
 
 from __future__ import annotations
@@ -49,6 +57,55 @@ COLUMNS = [
 
 #: Set by tests and by deployments that point at their own copy.
 PATH_OVERRIDE: Path | None = None
+
+#: The fine-tuning types the database records. ``lora`` and ``qlora`` freeze
+#: the base weights; ``full`` updates every parameter. A row written before
+#: the column was filled in carries a LoRA rank instead, and the rank is what
+#: identifies it as a LoRA run.
+LORA_FINETUNING_TYPES = frozenset({"lora", "qlora"})
+
+
+def is_lora_row(row: dict[str, Any]) -> bool:
+    """Whether a measured row is a LoRA run.
+
+    The database records the fine-tuning type, so the answer is read from the
+    row rather than assumed. Rows written before the column was filled in
+    carry a LoRA rank instead, and a row with neither is a full-parameter
+    run.
+    """
+    finetuning = str(row.get("finetuning_type") or "").strip().lower()
+    if finetuning:
+        return finetuning in LORA_FINETUNING_TYPES
+    return row.get("lora_rank") is not None
+
+
+def _finetuning_filter(mode: str | None) -> str:
+    """The SQL predicate that selects rows of one kind of run.
+
+    ``mode`` is ``"lora"``, ``"full"`` or ``None`` (no restriction). The
+    predicate reads the fine-tuning type and falls back to the LoRA rank for
+    the rows that predate the column, so the two conventions agree.
+
+    The two kinds are mutually exclusive, and together they cover every row:
+    a LoRA row has either a LoRA type or a LoRA rank, and a full-parameter
+    row has neither. The predicates are the exact complement of each other.
+
+    The columns are unqualified because every query reads them through the
+    ``v_train_bench`` view, which exposes them as plain columns.
+    """
+    if mode is None:
+        return ""
+    if mode == "lora":
+        return (
+            " AND (LOWER(COALESCE(finetuning_type, '')) IN ('lora','qlora')"
+            " OR (COALESCE(finetuning_type, '') = '' AND lora_rank IS NOT NULL))"
+        )
+    if mode == "full":
+        return (
+            " AND LOWER(COALESCE(finetuning_type, '')) NOT IN ('lora','qlora')"
+            " AND lora_rank IS NULL"
+        )
+    raise ValueError(f"未知的微调类型：{mode}")
 
 
 def database_path() -> Path | None:
@@ -115,12 +172,18 @@ def query_measured(
     status: str | None = "OK",
     limit: int = 50,
     catalogue_dir: Path | None = None,
+    finetuning: str | None = None,
 ) -> dict[str, Any]:
     """Return measured rows, optionally filtered.
 
     `slug` is the catalogue slug (`qwen3-5-2b`); `model` is the raw name as
     stored in the database (`Qwen/Qwen3.5-2B`). When only a slug is given,
     every database name that normalises to it is included.
+
+    `finetuning` restricts the rows to one kind of run — `"lora"`,
+    `"full"`, or `None` for both. It matters: a caller that calibrates a
+    LoRA model must not pick up full-parameter rows, whose memory and
+    throughput are a different measurement of a different thing.
     """
     if not available():
         return {
@@ -159,9 +222,10 @@ def query_measured(
 
         sql = (
             "SELECT " + ", ".join(COLUMNS) + " FROM v_train_bench"
+            " WHERE 1=1" + _finetuning_filter(finetuning)
         )
         if where:
-            sql += " WHERE " + " AND ".join(where)
+            sql += " AND " + " AND ".join(where)
         sql += " ORDER BY tokens_per_s DESC NULLS LAST, id LIMIT ?"
         params.append(max(1, min(int(limit), 500)))
 
@@ -188,11 +252,20 @@ def _names_for_slug(conn: sqlite3.Connection, slugs: list[str], target: str) -> 
     return matched
 
 
-def summarise_for_slug(slug: str, catalogue_dir: Path | None = None) -> dict[str, Any]:
+def summarise_for_slug(
+    slug: str,
+    catalogue_dir: Path | None = None,
+    finetuning: str | None = None,
+) -> dict[str, Any]:
     """Aggregate measured rows for one catalogue slug.
 
     The summary is what the UI compares against the estimate: the best
     measured throughput, the memory range, and how many runs back it.
+
+    `finetuning` restricts the rows to one kind of run — `"lora"`, `"full"`
+    or `None` for both. A caller that estimates a LoRA run wants LoRA rows;
+    one that estimates a full-parameter run wants full rows, and only falls
+    back to the other kind when it has to.
     """
     if not available():
         return {"available": False, "slug": slug, "rows": []}
@@ -207,15 +280,17 @@ def summarise_for_slug(slug: str, catalogue_dir: Path | None = None) -> dict[str
                     "reason": "实测库中没有该模型的数据"}
 
         placeholders = ",".join("?" for _ in names)
+        filter_sql = _finetuning_filter(finetuning)
         rows = [dict(r) for r in conn.execute(
             f"SELECT {', '.join(COLUMNS)} FROM v_train_bench "
-            f"WHERE status='OK' AND model IN ({placeholders}) "
+            f"WHERE 1=1{filter_sql} AND status='OK' AND model IN ({placeholders}) "
             f"ORDER BY tokens_per_s DESC",
             names,
         )]
         oom = [dict(r) for r in conn.execute(
             f"SELECT model, gpu_count, bs, cutoff_len, lora_rank, ds_config, note "
-            f"FROM v_train_bench WHERE status='OOM' AND model IN ({placeholders})",
+            f"FROM v_train_bench WHERE 1=1{filter_sql} "
+            f"AND status='OOM' AND model IN ({placeholders})",
             names,
         )]
     finally:

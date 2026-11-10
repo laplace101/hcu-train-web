@@ -125,15 +125,23 @@ def _measured_oom_rows() -> list[dict[str, Any]]:
     that OOMed at a given batch size cannot be run at that batch size on
     that many cards, whatever the estimate says. The peak the run reached
     before dying is close to the limit, so it also says how close.
+
+    Only LoRA rows are read. A full-parameter run that ran out of memory
+    says nothing about a LoRA configuration: LoRA does not carry the base
+    gradients and optimiser state, so it fits where the full-parameter run
+    did not. Reading both would mark a LoRA configuration as impossible
+    because a *different* kind of training exhausted the card.
     """
     if not measured_repo.available():
         return []
     conn = measured_repo._connect()
     try:
         rows = [dict(r) for r in conn.execute(
-            "SELECT model, gpu_count, bs, grad_accum, cutoff_len, ds_config, "
-            "liger, status, peak_mem_mib, note FROM v_train_bench "
-            "WHERE status IN ('OOM','SKIPPED') AND peak_mem_mib IS NOT NULL"
+            "SELECT model, gpu_count, bs, grad_accum, cutoff_len, lora_rank, ds_config, "
+            "liger, status, peak_mem_mib, note, finetuning_type "
+            "FROM v_train_bench "
+            "WHERE 1=1" + measured_repo._finetuning_filter("lora") +
+            " AND status IN ('OOM','SKIPPED') AND peak_mem_mib IS NOT NULL"
         )]
     finally:
         conn.close()
@@ -152,7 +160,14 @@ def _measured_oom_rows() -> list[dict[str, Any]]:
 
 
 def _measured_rows() -> list[dict[str, Any]]:
-    """Measured rows joined with catalogue facts."""
+    """Measured rows joined with catalogue facts.
+
+    Only LoRA rows are read, for the same reason as the OOM rows: this
+    calibration produces the coefficients of the *LoRA* resource model, and
+    a full-parameter row measures a different thing — it carries the base
+    gradients and optimiser state, so both its memory and its throughput
+    belong to a different training regime.
+    """
     if not measured_repo.available():
         return []
     conn = measured_repo._connect()
@@ -160,8 +175,10 @@ def _measured_rows() -> list[dict[str, Any]]:
         rows = [dict(r) for r in conn.execute(
             "SELECT model, gpu_count, bs, grad_accum, cutoff_len, lora_rank, ds_config, "
             "liger, flash_attn, status, step_time_s, tokens_per_s, tokens_per_s_total, "
-            "peak_mem_mib, gradient_checkpointing, max_steps, train_runtime_s "
-            "FROM v_train_bench WHERE status='OK'"
+            "peak_mem_mib, gradient_checkpointing, max_steps, train_runtime_s, "
+            "finetuning_type "
+            "FROM v_train_bench WHERE 1=1" + measured_repo._finetuning_filter("lora") +
+            " AND status='OK'"
         )]
     finally:
         conn.close()

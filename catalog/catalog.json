@@ -1453,6 +1453,270 @@
       }
     },
     {
+      "slug": "qwen3-6-27b",
+      "name": "Qwen3.6-27B",
+      "hf_id": "Qwen/Qwen3.6-27B",
+      "family": "Qwen3.6",
+      "kind": "dense",
+      "config_path": "catalog/models/qwen3-6-27b/config.json",
+      "model_type": "qwen3_5",
+      "has_vision": true,
+      "nested_text_config": true,
+      "num_layers": 64,
+      "hidden_size": 5120,
+      "num_attention_heads": 24,
+      "num_query_groups": 4,
+      "num_experts": null,
+      "valid_tp": [
+        1,
+        2,
+        4
+      ],
+      "valid_pp": [
+        1,
+        2,
+        4,
+        8
+      ],
+      "valid_cp": [
+        1,
+        2,
+        4,
+        8
+      ],
+      "suggested_tp": 4,
+      "suggested_pp": 1,
+      "suggested_ep": 1,
+      "adapter": "qwen_hybrid",
+      "verified": true,
+      "params_b": 27.357,
+      "suggested_num_gpus": 8,
+      "valid_ep": [
+        1
+      ],
+      "tp_probe": [
+        {
+          "tp_size": 1,
+          "tgs": 1057.28,
+          "mfu": 0.3796,
+          "iteration_ms": 123971.05,
+          "peak_memory_gib": 266.53,
+          "fits_in_hbm": false
+        },
+        {
+          "tp_size": 2,
+          "tgs": 735.69,
+          "mfu": 0.2641,
+          "iteration_ms": 178161.18,
+          "peak_memory_gib": 152.79,
+          "fits_in_hbm": false
+        },
+        {
+          "tp_size": 4,
+          "tgs": 450.99,
+          "mfu": 0.1619,
+          "iteration_ms": 290630.63,
+          "peak_memory_gib": 95.92,
+          "fits_in_hbm": false
+        }
+      ],
+      "baseline": {
+        "seq_length": 4096,
+        "micro_batch_size": 1,
+        "global_batch_size": 256,
+        "num_gpus": 8,
+        "task": "full",
+        "operator_profile": "bw1000",
+        "tp_size": 4,
+        "pp_size": 1,
+        "ep_size": 1
+      },
+      "baseline_result": {
+        "adapter": "qwen_hybrid",
+        "model_size_b": 27.3567,
+        "compute_ms": 266064.89,
+        "communication_ms": 24565.74,
+        "iteration_ms": 290630.63,
+        "tgs": 450.99,
+        "mfu": 0.1619,
+        "peak_memory_gib": 95.92
+      }
+    },
+    {
+      "slug": "qwen3-6-35b-a3b",
+      "name": "Qwen3.6-35B-A3B",
+      "hf_id": "Qwen/Qwen3.6-35B-A3B",
+      "family": "Qwen3.6",
+      "kind": "moe",
+      "config_path": "catalog/models/qwen3-6-35b-a3b/config.json",
+      "model_type": "qwen3_5_moe",
+      "has_vision": true,
+      "nested_text_config": true,
+      "num_layers": 40,
+      "hidden_size": 2048,
+      "num_attention_heads": 16,
+      "num_query_groups": 2,
+      "num_experts": 256,
+      "valid_tp": [
+        1,
+        2
+      ],
+      "valid_pp": [
+        1,
+        2,
+        4,
+        8
+      ],
+      "valid_cp": [
+        1,
+        2,
+        4,
+        8
+      ],
+      "suggested_tp": 2,
+      "suggested_pp": 1,
+      "suggested_ep": 8,
+      "adapter": "qwen_hybrid",
+      "verified": true,
+      "params_b": 35.107,
+      "suggested_num_gpus": 16,
+      "valid_ep": [
+        8,
+        4,
+        2,
+        1
+      ],
+      "tp_probe": [
+        {
+          "tp_size": 1,
+          "tgs": 3806.02,
+          "mfu": 0.2045,
+          "iteration_ms": 34438.08,
+          "peak_memory_gib": 282.81,
+          "fits_in_hbm": false
+        },
+        {
+          "tp_size": 2,
+          "tgs": 1147.82,
+          "mfu": 0.0617,
+          "iteration_ms": 114191.84,
+          "peak_memory_gib": 169.86,
+          "fits_in_hbm": false
+        }
+      ],
+      "baseline": {
+        "seq_length": 4096,
+        "micro_batch_size": 1,
+        "global_batch_size": 256,
+        "num_gpus": 16,
+        "task": "full",
+        "operator_profile": "bw1000",
+        "tp_size": 2,
+        "pp_size": 1,
+        "ep_size": 8
+      },
+      "baseline_result": {
+        "adapter": "qwen_hybrid",
+        "model_size_b": 35.1072,
+        "compute_ms": 43604.59,
+        "communication_ms": 17336.9,
+        "iteration_ms": 60941.49,
+        "tgs": 1075.39,
+        "mfu": 0.0578,
+        "peak_memory_gib": 64.01
+      }
+    },
+    {
+      "slug": "qwen3-8-27b",
+      "name": "Qwen3.8-27B",
+      "hf_id": "Qwen/Qwen3.8-27B",
+      "family": "Qwen3.8",
+      "kind": "dense",
+      "config_path": "catalog/models/qwen3-8-27b/config.json",
+      "model_type": "qwen3_5",
+      "has_vision": true,
+      "nested_text_config": true,
+      "num_layers": 64,
+      "hidden_size": 5120,
+      "num_attention_heads": 24,
+      "num_query_groups": 4,
+      "num_experts": null,
+      "valid_tp": [
+        1,
+        2,
+        4
+      ],
+      "valid_pp": [
+        1,
+        2,
+        4,
+        8
+      ],
+      "valid_cp": [
+        1,
+        2,
+        4,
+        8
+      ],
+      "suggested_tp": 4,
+      "suggested_pp": 1,
+      "suggested_ep": 1,
+      "adapter": "qwen_hybrid",
+      "verified": true,
+      "params_b": 27.357,
+      "suggested_num_gpus": 8,
+      "valid_ep": [
+        1
+      ],
+      "tp_probe": [
+        {
+          "tp_size": 1,
+          "tgs": 1057.28,
+          "mfu": 0.3796,
+          "iteration_ms": 123971.05,
+          "peak_memory_gib": 266.53,
+          "fits_in_hbm": false
+        },
+        {
+          "tp_size": 2,
+          "tgs": 735.69,
+          "mfu": 0.2641,
+          "iteration_ms": 178161.18,
+          "peak_memory_gib": 152.79,
+          "fits_in_hbm": false
+        },
+        {
+          "tp_size": 4,
+          "tgs": 450.99,
+          "mfu": 0.1619,
+          "iteration_ms": 290630.63,
+          "peak_memory_gib": 95.92,
+          "fits_in_hbm": false
+        }
+      ],
+      "baseline": {
+        "seq_length": 4096,
+        "micro_batch_size": 1,
+        "global_batch_size": 256,
+        "num_gpus": 8,
+        "task": "full",
+        "operator_profile": "bw1000",
+        "tp_size": 4,
+        "pp_size": 1,
+        "ep_size": 1
+      },
+      "baseline_result": {
+        "adapter": "qwen_hybrid",
+        "model_size_b": 27.3567,
+        "compute_ms": 266064.89,
+        "communication_ms": 24565.74,
+        "iteration_ms": 290630.63,
+        "tgs": 450.99,
+        "mfu": 0.1619,
+        "peak_memory_gib": 95.92
+      }
+    },
+    {
       "slug": "qwen3-vl-2b-instruct",
       "name": "Qwen3-VL-2B",
       "hf_id": "Qwen/Qwen3-VL-2B-Instruct",

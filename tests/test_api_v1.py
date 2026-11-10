@@ -221,8 +221,8 @@ def main() -> int:
     check("旧 /api/health 200", status == 200 and body.get("ok") is True)
     status, body = get("/api/bootstrap")
     check("旧 /api/bootstrap 200", status == 200 and body.get("ok") is True)
-    # The catalogue grew by three MiniMax models.
-    check("bootstrap 含 38 个预设模型", len(body.get("models", [])) == 38, str(len(body.get("models", []))))
+    # The catalogue grew by the Qwen3.6 and Qwen3.8 series.
+    check("bootstrap 含 41 个预设模型", len(body.get("models", [])) == 41, str(len(body.get("models", []))))
 
     print("\n" + "=" * 46)
     if failures:

@@ -71,11 +71,7 @@ def _row_metrics(row: dict[str, Any]) -> dict[str, Any]:
 
 def _is_lora(found: dict[str, Any]) -> bool:
     """Whether the measured row is a LoRA run."""
-    finetuning = (found.get("finetuning_type") or "").strip().lower()
-    if finetuning:
-        return finetuning in {"lora", "qlora"}
-    # A row that carries a LoRA rank is a LoRA run.
-    return found.get("lora_rank") is not None
+    return measured_repo.is_lora_row(found)
 
 
 def _deviation(estimate: float | None, measured: float | None) -> float | None:
@@ -91,35 +87,57 @@ def find_measured(
     gpu_count: int | None = None,
     seq_length: int | None = None,
     micro_batch_size: int | None = None,
+    ds_config: str | None = None,
     status: str = "OK",
     rows: list[dict[str, Any]] | None = None,
+    estimate_is_lora: bool = False,
 ) -> dict[str, Any] | None:
     """The measured row that corresponds to an estimate.
 
-    An exact match has to agree on card count, sequence length and batch
-    size. If nothing matches exactly, the closest row is returned with
-    `match_quality` set to `nearest`, so the caller can say what differed.
+    An exact match has to agree on card count, sequence length, batch size
+    and DeepSpeed stage. If nothing matches exactly, the closest row is
+    returned with `match_quality` set to `nearest`, so the caller can say
+    what differed.
 
     `rows` lets a caller pass rows it has already fetched, so the query is
     not repeated.
+
+    `estimate_is_lora` says what kind of training is being estimated. Rows
+    of that kind are preferred: a LoRA measurement and a full-parameter
+    measurement of the same configuration differ by the base weights'
+    gradients and optimiser state, so comparing across the two answers a
+    different question than the one asked.
     """
     if rows is None:
         if not slug:
             return None
+        preferred = "lora" if estimate_is_lora else "full"
         result = measured_repo.query_measured(
-            slug=slug, gpu_count=gpu_count, status=status, limit=200
+            slug=slug, gpu_count=gpu_count, status=status, limit=200,
+            finetuning=preferred,
         ) or {}
         rows = result.get("rows") or []
+        if not rows:
+            # No measurement of the kind this estimate is about. Fall back
+            # to the other kind rather than reporting nothing.
+            result = measured_repo.query_measured(
+                slug=slug, gpu_count=gpu_count, status=status, limit=200,
+            ) or {}
+            rows = result.get("rows") or []
     if not rows:
         return None
 
     def score(row: dict[str, Any]) -> tuple[int, int]:
         """How well a row matches; lower is better."""
         penalty = 0
+        if gpu_count is not None and row.get("gpu_count") not in (None, gpu_count):
+            penalty += 1
         if seq_length is not None and row.get("cutoff_len") not in (None, seq_length):
             penalty += 1
         if (micro_batch_size is not None
                 and row.get("bs") not in (None, micro_batch_size)):
+            penalty += 1
+        if ds_config is not None and (row.get("ds_config") or "none") != ds_config:
             penalty += 1
         return penalty, -int(row.get("tokens_per_s") or 0)
 
@@ -131,6 +149,9 @@ def find_measured(
     quality = MATCH_EXACT if penalties == 0 else MATCH_NEAREST
     differences = []
     if penalties:
+        if gpu_count is not None and metrics["gpu_count"] not in (None, gpu_count):
+            differences.append(
+                f"卡数 {metrics['gpu_count']} ≠ 估算的 {gpu_count}")
         if seq_length is not None and metrics["seq_length"] not in (None, seq_length):
             differences.append(
                 f"序列长度 {metrics['seq_length']} ≠ 估算的 {seq_length}")
@@ -138,6 +159,9 @@ def find_measured(
                 and metrics["micro_batch_size"] not in (None, micro_batch_size)):
             differences.append(
                 f"micro batch {metrics['micro_batch_size']} ≠ 估算的 {micro_batch_size}")
+        if ds_config is not None and (metrics["ds_config"] or "none") != ds_config:
+            differences.append(
+                f"并行策略 {metrics['ds_config'] or 'none'} ≠ 估算的 {ds_config}")
 
     return {
         "match_quality": quality,
@@ -155,18 +179,23 @@ def compare(
     seq_length: int | None = None,
     micro_batch_size: int | None = None,
     mode: str | None = None,
-    measured_is_lora: bool = False,
+    estimate_is_lora: bool = False,
 ) -> dict[str, Any]:
     """Compare an estimate with the measured data.
 
     `estimate` is the summary the estimator produced — the fields
     `tgs`, `peak_gib` and `iteration_ms` are used where present.
+
+    `estimate_is_lora` says what kind of training the estimate is about.
+    It decides which measured rows are looked for, and whether the two
+    sides are comparable.
     """
     found = find_measured(
         slug=slug,
         gpu_count=gpu_count,
         seq_length=seq_length,
         micro_batch_size=micro_batch_size,
+        estimate_is_lora=estimate_is_lora,
     )
 
     if found is None:
@@ -177,7 +206,8 @@ def compare(
             "suggestion": (
                 "上传该模型在此配置下的实测数据后，这里会给出估算与实测的偏差"
             ),
-            "measured_is_lora": measured_is_lora,
+            "measured_is_lora": None,
+            "comparable": False,
             "mode": mode,
         }
 
@@ -193,21 +223,34 @@ def compare(
     tgs_deviation = _deviation(estimate_tgs, measured_tgs)
     peak_deviation = _deviation(estimate_peak, measured_peak)
 
+    # A deviation is only meaningful when the two sides were measured at
+    # the same configuration. Across different batch sizes or ZeRO stages
+    # the throughput differs for reasons that have nothing to do with the
+    # estimator's accuracy, so the number is withheld rather than shown as
+    # if it were an error.
+    like_for_like = found["match_quality"] == MATCH_EXACT
+    if not like_for_like:
+        tgs_deviation = None
+        peak_deviation = None
+
     notes: list[str] = []
-    # The measured row says whether it was a LoRA run. When it was, the
-    # estimate has to be a LoRA estimate too for the two to be comparable —
-    # a full-parameter estimate against a LoRA run differs by roughly the
+    # The measured row says whether it was a LoRA run. The two sides are
+    # only comparable when they measure the same kind of training: a
+    # full-parameter estimate against a LoRA run differs by roughly the
     # size of the base weights' optimiser state and gradients.
     row_is_lora = _is_lora(found)
-    if row_is_lora and not measured_is_lora:
-        notes.append(
-            "实测记录是 LoRA 微调（基座权重冻结），而这里的估算来自全参训练内核，"
-            "两者不是同一口径，偏差不代表估算的误差"
-        )
-    elif measured_is_lora:
-        notes.append(
-            "实测记录来自 LoRA 微调（基座权重冻结），与全参训练的估算不是同一口径"
-        )
+    same_kind = row_is_lora == estimate_is_lora
+    if not same_kind:
+        if row_is_lora:
+            notes.append(
+                "实测记录是 LoRA 微调（基座权重冻结），而这里的估算来自全参训练内核，"
+                "两者不是同一口径，偏差不代表估算的误差"
+            )
+        else:
+            notes.append(
+                "实测记录是全参训练，而这里的估算来自 LoRA 模型（基座权重冻结），"
+                "两者不是同一口径，偏差不代表估算的误差"
+            )
     if found["match_quality"] == MATCH_NEAREST:
         notes.append(
             "没有完全一致的实测记录，下面是配置最接近的一条：" +
@@ -237,8 +280,8 @@ def compare(
         "measured_micro_batch_size": found.get("micro_batch_size"),
         "measured_ds_config": found.get("ds_config"),
         "comparability_note": "；".join(notes),
-        "measured_is_lora": row_is_lora or measured_is_lora,
-        "comparable": not (row_is_lora and not measured_is_lora),
+        "measured_is_lora": row_is_lora,
+        "comparable": same_kind,
         "mode": mode,
     }
 

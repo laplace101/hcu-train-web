@@ -107,7 +107,13 @@ def _measured_oom(slug, ds_config, liger, seq_length, micro_batch_size,
 
 
 def _measured_group(slug, ds_config, liger: int) -> list[dict[str, Any]]:
-    """Measured rows for one (model, ZeRO stage, Liger) combination."""
+    """Measured rows for one (model, ZeRO stage, Liger) combination.
+
+    Only LoRA rows are read: this group feeds the LoRA memory model, and a
+    full-parameter row measures a different training regime — it carries the
+    base gradients and optimiser state, so its peak memory belongs to a
+    different question than the one being estimated.
+    """
     if not measured_repo.available():
         return []
     conn = measured_repo._connect()
@@ -115,7 +121,8 @@ def _measured_group(slug, ds_config, liger: int) -> list[dict[str, Any]]:
         rows = [dict(r) for r in conn.execute(
             "SELECT model, gpu_count, bs, grad_accum, cutoff_len, lora_rank, ds_config, "
             "liger, status, step_time_s, tokens_per_s, tokens_per_s_total, peak_mem_mib "
-            "FROM v_train_bench WHERE status='OK'"
+            "FROM v_train_bench WHERE 1=1" + measured_repo._finetuning_filter("lora") +
+            " AND status='OK'"
         )]
     finally:
         conn.close()

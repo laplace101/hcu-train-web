@@ -92,6 +92,9 @@ def main() -> int:
     expectations = [
         ("qwen3-8b", "estimable", "qwen3"),
         ("qwen3-5-2b", "estimable", "qwen_hybrid"),
+        ("qwen3-6-27b", "estimable", "qwen_hybrid"),
+        ("qwen3-6-35b-a3b", "estimable", "qwen_hybrid"),
+        ("qwen3-8-27b", "estimable", "qwen_hybrid"),
         ("qwen3-vl-8b-instruct", "estimable", "qwen3_vl"),
         ("deepseek-v3", "approximate", "deepseek_v3"),
         ("glm-5", "estimable", "glm_family"),
